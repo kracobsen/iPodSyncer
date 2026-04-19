@@ -272,11 +272,12 @@ def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> Any:
 def attach_artwork(track: Any, image_path: Path) -> bool:
     """Queue cover art on `track`; libgpod renders + writes F1_1.ithmb at commit.
 
-    The SWIG binding for `itdb_track_set_thumbnails_from_data` refuses
-    Python `bytes` (guchar const* typemap isn't wired up), so we go through
-    the file-path variant. gdk-pixbuf sniffs format from magic bytes, so
+    SWIG's `gchar const *` typemap in this build wants `bytes`, not `str`
+    (same as `itdb_cp_track_to_ipod`). The file-path variant is used because
+    the `_from_data` binding's `guchar const *` typemap is unwired — bytes
+    get rejected there too. gdk-pixbuf sniffs format from magic bytes, so
     the cache file's `.bin` suffix doesn't matter.
     """
     gpod = _require_gpod()
-    ok = gpod.itdb_track_set_thumbnails(track, str(image_path))
+    ok = gpod.itdb_track_set_thumbnails(track, str(image_path).encode("utf-8"))
     return bool(ok)
