@@ -18,6 +18,7 @@ from ipodsync.device import mount as mount_mod
 from ipodsync.device import snapshot as snap
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
+from ipodsync.pipeline import artwork
 
 # Passthrough set for phase 6: no codec probe yet, we trust the extension.
 # Phase 8 widens this via ffprobe-backed classification.
@@ -156,6 +157,7 @@ def run(source: Path, *, console: Console | None = None) -> int:
         log.print(f"[dim]snapshot {pre.timestamp}[/]")
 
         added_track = None
+        art_attached = False
         try:
             with gpod_facade.open_readwrite(mnt) as db:
                 existing_id = gpod_facade.find_track_id_by_hash(db, sha1)
@@ -166,6 +168,10 @@ def run(source: Path, *, console: Console | None = None) -> int:
                     )
                     return 0
                 added_track = gpod_facade.add_music_track(db, source, tags, sha1)
+
+                art_bytes = artwork.extract_cached(source, sha1)
+                if art_bytes:
+                    art_attached = gpod_facade.attach_artwork(added_track, art_bytes)
         except gpod_facade.GpodImportError as e:
             log.print(f"[red]✗[/] {e}")
             return 1
@@ -179,9 +185,10 @@ def run(source: Path, *, console: Console | None = None) -> int:
 
         # id is only valid post-commit (assigned by itdb_write).
         new_id = int(added_track.id) if added_track is not None else 0
+        art_note = " +art" if art_attached else ""
         log.print(
             f"[green]✓[/] added [bold]{tags.title}[/] — {tags.artist or '—'} "
-            f"(track #{new_id})"
+            f"(track #{new_id}){art_note}"
         )
         return 0
     finally:

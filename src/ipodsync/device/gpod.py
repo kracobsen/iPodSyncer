@@ -251,3 +251,15 @@ def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> Any:
     gpod.itdb_playlist_add_track(mpl, track, -1)
 
     return track
+
+
+def attach_artwork(track: Any, image_data: bytes) -> bool:
+    """Queue cover art on `track`; libgpod renders + writes F1_1.ithmb at commit.
+
+    Uses `itdb_track_set_thumbnails_from_data` so we avoid round-tripping the
+    image through a temp file. gdk-pixbuf handles format decoding (JPEG/PNG);
+    the per-model thumbnail size table lives inside libgpod.
+    """
+    gpod = _require_gpod()
+    ok = gpod.itdb_track_set_thumbnails_from_data(track, image_data, len(image_data))
+    return bool(ok)
