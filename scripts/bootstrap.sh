@@ -67,6 +67,38 @@ if grep -q "dependency('libplist')" "$LIBGPOD_DIR/meson.build"; then
   sed -i '' "s/dependency('libplist')/dependency('libplist-2.0')/" "$LIBGPOD_DIR/meson.build"
 fi
 
+# python-gpod's Database._load_gtkpod_extended_info uses `_itdb_file` as a
+# str, but itdb_get_itunesdb_path returns bytes. Without decoding, the
+# computed `.ext` path is literally `b'/.../iTunesDB'.ext` — so gtkpod extended
+# info (where we store per-track sha1 for dedupe) never loads back. Patch it.
+python_ipod="$LIBGPOD_DIR/bindings/python/ipod.py"
+if ! grep -q "isinstance(itdb_file, bytes)" "$python_ipod"; then
+  python3 - <<PY
+import re, pathlib
+p = pathlib.Path("$python_ipod")
+src = p.read_text()
+old = (
+    '    def _load_gtkpod_extended_info(self):\n'
+    '        """Read extended information from a gtkpod .ext file."""\n'
+    '        itdbext_file = "%s.ext" % (self._itdb_file)\n\n'
+    '        if os.path.exists(self._itdb_file) and os.path.exists(itdbext_file):\n'
+    '            gtkpod.parse(itdbext_file, self, self._itdb_file)\n'
+)
+new = (
+    '    def _load_gtkpod_extended_info(self):\n'
+    '        """Read extended information from a gtkpod .ext file."""\n'
+    '        itdb_file = self._itdb_file\n'
+    '        if isinstance(itdb_file, bytes):\n'
+    '            itdb_file = itdb_file.decode("UTF-8")\n'
+    '        itdbext_file = "%s.ext" % itdb_file\n\n'
+    '        if os.path.exists(itdb_file) and os.path.exists(itdbext_file):\n'
+    '            gtkpod.parse(itdbext_file, self, itdb_file)\n'
+)
+assert old in src, "ipod.py layout changed; rewrite the patch"
+p.write_text(src.replace(old, new))
+PY
+fi
+
 # bindings/python/meson.build computes the install dir as
 #   py_module = get_option('prefix') + py3_inst.get_path('purelib') / project_name
 # On macOS Homebrew Python (and any config where sysconfig returns an absolute
