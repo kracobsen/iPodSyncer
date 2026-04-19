@@ -12,3 +12,6 @@ build/
 .idea/
 .vscode/
 *.swp
+
+# vendored source trees (cloned by scripts/bootstrap.sh)
+vendor/
