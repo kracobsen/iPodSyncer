@@ -43,6 +43,10 @@ class DbOpenError(RuntimeError):
     """Raised when libgpod cannot parse the iTunesDB at the mount point."""
 
 
+class DbWriteError(RuntimeError):
+    """Raised when libgpod fails to copy a file or save the DB."""
+
+
 def _require_gpod() -> Any:
     try:
         import gpod  # type: ignore[import-not-found]
@@ -113,6 +117,136 @@ def open_readonly(mount_point: Path) -> Iterator[Any]:
         del db
 
 
+@contextmanager
+def open_readwrite(mount_point: Path) -> Iterator[Any]:
+    """Open the iTunesDB for mutation; `db.close()` writes iTunesDB + iTunesCDB + hash58."""
+    gpod = _require_gpod()
+    try:
+        db = gpod.Database(str(mount_point))
+    except gpod.DatabaseException as e:
+        raise DbOpenError(str(e)) from e
+    committed = False
+    try:
+        yield db
+        try:
+            db.close()
+        except gpod.DatabaseException as e:
+            raise DbWriteError(f"itdb_write failed: {e}") from e
+        committed = True
+    finally:
+        if not committed:
+            # Don't call close() on error — that would persist partial state.
+            del db
+
+
 def iter_tracks(db: Any) -> Iterator[TrackInfo]:
     for i in range(len(db)):
         yield _track_info(db[i]._track)
+
+
+# --- mutation helpers (phase 6+) -------------------------------------------
+
+
+def content_hash(path: Path) -> str:
+    """SHA-1 of (file-size || first 16 KiB). Matches gtkpod's `sha1_hash`."""
+    _require_gpod()
+    from gpod import gtkpod
+    return gtkpod.sha1_hash(str(path))
+
+
+def find_track_id_by_hash(db: Any, sha1: str) -> int | None:
+    """Return the iTunesDB id of a previously-added track with this source hash."""
+    for i in range(len(db)):
+        track = db[i]
+        try:
+            ud = track["userdata"]
+        except KeyError:
+            continue
+        if isinstance(ud, dict) and ud.get("sha1_hash") == sha1:
+            return int(track._track.id)
+    return None
+
+
+@dataclass(frozen=True)
+class MusicTags:
+    title: str
+    artist: str
+    album: str
+    albumartist: str
+    genre: str
+    year: int | None
+    track_nr: int | None
+    tracks: int | None
+    cd_nr: int | None
+    cds: int | None
+    duration_ms: int
+    bitrate_kbps: int | None
+    samplerate: int | None
+    size_bytes: int
+    filetype_label: str   # human-readable filetype tag ("MPEG audio file", ...)
+
+
+def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> int:
+    """Create an Itdb_Track for `source`, copy the file to F## pool, add to MPL.
+
+    Returns the new track's iTunesDB id. Caller is responsible for closing the
+    database to persist writes.
+    """
+    gpod = _require_gpod()
+    import socket
+
+    track = gpod.itdb_track_new()
+
+    def _set_str(attr: str, value: str) -> None:
+        setattr(track, attr, value.encode("utf-8") if value else b"")
+
+    _set_str("title", tags.title)
+    _set_str("artist", tags.artist)
+    _set_str("album", tags.album)
+    _set_str("albumartist", tags.albumartist)
+    _set_str("genre", tags.genre)
+    _set_str("filetype", tags.filetype_label)
+
+    track.mediatype = gpod.ITDB_MEDIATYPE_AUDIO   # 0x01
+    track.tracklen = tags.duration_ms
+    track.size = tags.size_bytes
+    if tags.bitrate_kbps is not None:
+        track.bitrate = tags.bitrate_kbps
+    if tags.samplerate is not None:
+        track.samplerate = tags.samplerate
+    if tags.year is not None:
+        track.year = tags.year
+    if tags.track_nr is not None:
+        track.track_nr = tags.track_nr
+    if tags.tracks is not None:
+        track.tracks = tags.tracks
+    if tags.cd_nr is not None:
+        track.cd_nr = tags.cd_nr
+    if tags.cds is not None:
+        track.cds = tags.cds
+
+    # Attach BEFORE copy — itdb_cp_track_to_ipod reads the mount point off track.itdb.
+    gpod.itdb_track_add(db._itdb, track, -1)
+
+    if gpod.itdb_cp_track_to_ipod(track, str(source).encode("utf-8"), None) != 1:
+        gpod.itdb_track_unlink(track)
+        raise DbWriteError(f"itdb_cp_track_to_ipod failed for {source}")
+
+    # Stash provenance so re-runs can dedupe (persists via gtkpod .ext file).
+    mp = gpod.itdb_get_mountpoint(track.itdb).decode("utf-8")
+    ipod_rel = gpod.itdb_filename_on_ipod(track).decode("utf-8").replace(
+        mp, ""
+    ).replace("/", ":")
+    gpod.sw_set_track_userdata(track, {
+        "transferred": 1,
+        "sha1_hash": sha1,
+        "filename": str(source),
+        "filename_ipod": ipod_rel,
+        "hostname": socket.gethostname(),
+        "charset": "UTF-8",
+    })
+
+    mpl = gpod.itdb_playlist_mpl(db._itdb)
+    gpod.itdb_playlist_add_track(mpl, track, -1)
+
+    return int(track.id)

@@ -6,9 +6,12 @@ exits 0. Subsequent phases fill these in.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
 from ipodsync import __version__
+from ipodsync import add as add_mod
 from ipodsync import doctor as doctor_mod
 from ipodsync import ls as ls_mod
 from ipodsync import restore as restore_mod
@@ -66,9 +69,13 @@ def ls_(
 
 
 @app.command()
-def add() -> None:
-    """Add one or more audio files to the iPod."""
-    _stub("add")
+def add(
+    file: Path = typer.Argument(  # noqa: B008  (typer idiom)
+        ..., exists=True, dir_okay=False, readable=True, help="MP3 or M4A file"
+    ),
+) -> None:
+    """Add a single music file (.mp3 or .m4a) to the iPod."""
+    raise typer.Exit(code=add_mod.run(file))
 
 
 @app.command()
