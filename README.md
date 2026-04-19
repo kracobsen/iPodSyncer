@@ -32,6 +32,18 @@ One command builds `gerion0/libgpod` + the `python-gpod` bindings via Homebrew, 
 
 The script installs these Homebrew formulae: `pkg-config meson ninja swig glib libplist sqlite gdk-pixbuf libxml2 pygobject3 ffmpeg`, plus `mutagen` into brew's Python. `PKG_CONFIG_PATH` is extended to include the keg-only `sqlite` and `libxml2` pkgconfig dirs.
 
+### Optional: libfdk_aac for better transcode quality
+
+Stock Homebrew's `ffmpeg` ships with the built-in `aac` encoder, which audibly smears transients on dense material (strings, cymbals, loud FLAC masters). `libfdk_aac` is substantially cleaner but non-free, so it lives in a tap:
+
+```
+brew uninstall ffmpeg
+brew tap homebrew-ffmpeg/ffmpeg
+brew install homebrew-ffmpeg/ffmpeg/ffmpeg --with-fdk-aac
+```
+
+`ipodsync` auto-detects `libfdk_aac` at transcode time and uses it (VBR q=5, ~224 kbps avg) when present. `ipodsync doctor` reports whether it's available.
+
 Verify (the script does this automatically at the end):
 
 ```

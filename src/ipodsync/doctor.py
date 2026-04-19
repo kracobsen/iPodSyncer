@@ -90,6 +90,22 @@ def _check_ffmpeg_tool(name: str) -> CheckResult:
     return CheckResult(name, "OK", _tool_version(name) or f"found at {path}")
 
 
+def _check_libfdk_aac() -> CheckResult:
+    from ipodsync.pipeline.transcode import _has_libfdk_aac
+
+    if _has_libfdk_aac():
+        return CheckResult("libfdk_aac", "OK", "available — used for non-native → AAC")
+    return CheckResult(
+        "libfdk_aac",
+        "WARN",
+        "not available — falls back to ffmpeg's built-in `aac` (lower quality)",
+        fix=(
+            "`brew uninstall ffmpeg && brew tap homebrew-ffmpeg/ffmpeg && "
+            "brew install homebrew-ffmpeg/ffmpeg/ffmpeg --with-fdk-aac`"
+        ),
+    )
+
+
 def _check_libgpod() -> CheckResult:
     try:
         import gpod  # type: ignore[import-not-found]
@@ -157,6 +173,7 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     _check_python,
     lambda: _check_ffmpeg_tool("ffmpeg"),
     lambda: _check_ffmpeg_tool("ffprobe"),
+    _check_libfdk_aac,
     _check_libgpod,
     _check_fda,
     _check_pkg_manager,
