@@ -69,6 +69,25 @@ class _Prepared:
     transcoded: bool
 
 
+def _sweep_orphans(mount_point: Path, log: Console) -> int:
+    """Delete F## files not referenced by any track. Only called after --prune."""
+    try:
+        with gpod_facade.open_readonly(mount_point) as db:
+            referenced = gpod_facade.referenced_ipod_paths(db)
+    except gpod_facade.DbOpenError as e:
+        log.print(f"[yellow]![/] orphan sweep skipped: {e}")
+        return 0
+    removed = 0
+    for f in gpod_facade.music_pool_files(mount_point):
+        if f not in referenced:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError as e:
+                log.print(f"[yellow]![/] could not unlink {f}: {e}")
+    return removed
+
+
 def _walk_music(src: Path) -> list[Path]:
     music = src / "music"
     if not music.is_dir():
@@ -156,6 +175,7 @@ def run(
     *,
     strict: bool = False,
     dry_run: bool = False,
+    prune: bool = False,
     console: Console | None = None,
 ) -> int:
     log = console or Console(stderr=True)
@@ -212,14 +232,25 @@ def run(
             log.print(f"[red]✗[/] could not read iTunesDB: {e}")
             return 1
 
+        source_sha1s = {p.sha1 for p in plans}
         to_add = [p for p in plans if p.sha1 not in existing]
         dedup_skip = len(plans) - len(to_add)
         transcode_n = sum(1 for p in to_add if p.needs_transcode)
+        to_prune_n = len(existing - source_sha1s) if prune else 0
+        prune_blocked = (
+            0 if prune else len(existing - source_sha1s)
+        )  # cosmetic — for the "extras left alone" line
 
         log.print(
             f"plan: add={len(to_add)} skip(dedup)={dedup_skip} "
-            f"transcode={transcode_n} scan-failed={len(scan_failures)}"
+            f"transcode={transcode_n} prune={to_prune_n} "
+            f"scan-failed={len(scan_failures)}"
         )
+        if not prune and prune_blocked:
+            log.print(
+                f"[dim]  · {prune_blocked} on-device track(s) not in source "
+                f"(pass --prune to remove)[/]"
+            )
 
         if strict and transcode_n:
             log.print(
@@ -234,14 +265,17 @@ def run(
             log.print("[yellow]--dry-run: exiting without writes[/]")
             return 0
 
-        if not to_add:
+        if not to_add and not to_prune_n:
             log.print("[green]✓[/] already in sync")
             return 5 if scan_failures else 0
 
-        prepared, prep_failures = _prepare(to_add, strict, log)
-        if not prepared:
-            log.print("[red]✗[/] all new items failed during prepare")
-            return 1
+        prepared: list[_Prepared] = []
+        prep_failures: list[tuple[Path, str]] = []
+        if to_add:
+            prepared, prep_failures = _prepare(to_add, strict, log)
+            if not prepared and not to_prune_n:
+                log.print("[red]✗[/] all new items failed during prepare")
+                return 1
 
         try:
             pre = snap.create(mnt, guid)
@@ -251,18 +285,34 @@ def run(
         log.print(f"[dim]snapshot {pre.timestamp}[/]")
 
         added = 0
+        pruned = 0
         try:
-            with gpod_facade.open_readwrite(mnt) as db, _progress("commit") as prog:
-                task = prog.add_task("", total=len(prepared), current="")
-                for it in prepared:
-                    prog.update(task, current=it.plan.source.name)
-                    track = gpod_facade.add_music_track(
-                        db, it.effective, it.tags, it.plan.sha1
-                    )
-                    if it.art_path is not None:
-                        gpod_facade.attach_artwork(track, it.art_path)
-                    added += 1
-                    prog.advance(task)
+            with gpod_facade.open_readwrite(mnt) as db:
+                if prune and to_prune_n:
+                    with _progress("prune") as prog:
+                        task = prog.add_task("", total=to_prune_n, current="")
+                        targets = [
+                            (info, w) for info, w, sha in
+                            gpod_facade.iter_track_wrappers(db)
+                            if sha and sha not in source_sha1s
+                        ]
+                        for info, w in targets:
+                            prog.update(task, current=info.title or f"#{info.id}")
+                            gpod_facade.remove_track(db, w)
+                            pruned += 1
+                            prog.advance(task)
+                if prepared:
+                    with _progress("commit") as prog:
+                        task = prog.add_task("", total=len(prepared), current="")
+                        for it in prepared:
+                            prog.update(task, current=it.plan.source.name)
+                            track = gpod_facade.add_music_track(
+                                db, it.effective, it.tags, it.plan.sha1
+                            )
+                            if it.art_path is not None:
+                                gpod_facade.attach_artwork(track, it.art_path)
+                            added += 1
+                            prog.advance(task)
         except gpod_facade.DbWriteError as e:
             log.print(f"[red]✗[/] write failed: {e}")
             log.print(
@@ -270,9 +320,18 @@ def run(
             )
             return 1
 
+        orphans = 0
+        if prune:
+            orphans = _sweep_orphans(mnt, log)
+
         total_failed = len(scan_failures) + len(prep_failures)
+        msg_parts = [f"added {added}"]
+        if prune:
+            msg_parts.append(f"pruned {pruned}")
+            if orphans:
+                msg_parts.append(f"orphans {orphans}")
         log.print(
-            f"[green]✓[/] added {added} track(s) in one commit; "
+            f"[green]✓[/] {', '.join(msg_parts)} track(s) in one commit; "
             f"{total_failed} skipped"
         )
         return 5 if total_failed else 0

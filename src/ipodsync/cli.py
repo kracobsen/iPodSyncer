@@ -15,6 +15,7 @@ from ipodsync import add as add_mod
 from ipodsync import doctor as doctor_mod
 from ipodsync import ls as ls_mod
 from ipodsync import restore as restore_mod
+from ipodsync import rm as rm_mod
 from ipodsync import sync as sync_mod
 from ipodsync.device import ops as device_ops
 
@@ -98,9 +99,39 @@ def add(
 
 
 @app.command()
-def rm() -> None:
-    """Remove tracks from the iPod."""
-    _stub("rm")
+def rm(
+    track_ids: list[int] = typer.Argument(  # noqa: B008
+        None,
+        metavar="[TRACK_IDS]...",
+        help="iTunesDB track id(s) to delete (see `ipodsync ls`).",
+    ),
+    filter_expr: str | None = typer.Option(
+        None,
+        "--filter",
+        metavar="KEY=VALUE",
+        help="Match title/artist/album/genre (case-insensitive equality).",
+    ),
+    kind: str | None = typer.Option(
+        None,
+        "--kind",
+        help="Constrain to music | podcast | book.",
+        case_sensitive=False,
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be deleted without writing."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """Remove tracks from the iPod. Deletes the F## file and the DB row."""
+    raise typer.Exit(
+        code=rm_mod.run(
+            list(track_ids or []),
+            filter_expr=filter_expr,
+            kind=kind,
+            dry_run=dry_run,
+            assume_yes=yes,
+        )
+    )
 
 
 @app.command()
@@ -117,10 +148,17 @@ def sync(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the plan without touching the device's DB."
     ),
+    prune: bool = typer.Option(
+        False,
+        "--prune",
+        help="Also remove on-device tracks that are no longer in the source tree.",
+    ),
 ) -> None:
     """Mirror ``<src>/music/**`` to the iPod (music-only for now; idempotent)."""
     strict = bool((ctx.obj or {}).get("strict", False))
-    raise typer.Exit(code=sync_mod.run(source, strict=strict, dry_run=dry_run))
+    raise typer.Exit(
+        code=sync_mod.run(source, strict=strict, dry_run=dry_run, prune=prune)
+    )
 
 
 @app.command()

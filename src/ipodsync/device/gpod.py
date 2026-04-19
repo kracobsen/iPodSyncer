@@ -183,6 +183,66 @@ def collect_sha1_hashes(db: Any) -> set[str]:
     return out
 
 
+def _track_sha1(track: Any) -> str | None:
+    try:
+        ud = track["userdata"]
+    except KeyError:
+        return None
+    if isinstance(ud, dict):
+        h = ud.get("sha1_hash")
+        return str(h) if h else None
+    return None
+
+
+def find_track_by_id(db: Any, track_id: int) -> Any | None:
+    """Return the python-gpod Track wrapper whose `id` matches, or None."""
+    for i in range(len(db)):
+        track = db[i]
+        if int(track._track.id) == int(track_id):
+            return track
+    return None
+
+
+def iter_track_wrappers(db: Any) -> Iterator[tuple[TrackInfo, Any, str | None]]:
+    """Yield (TrackInfo, wrapper, sha1) per track. Wrapper lives only while `db` is open."""
+    for i in range(len(db)):
+        wrapper = db[i]
+        yield _track_info(wrapper._track), wrapper, _track_sha1(wrapper)
+
+
+def remove_track(db: Any, track_wrapper: Any) -> None:
+    """Unlink from all playlists, delete F## file, unlink from DB. DB must be open r/w."""
+    db.remove(track_wrapper, ipod=True, harddisk=False, quiet=True)
+
+
+def music_pool_files(mount_point: Path) -> Iterator[Path]:
+    """Yield every real file under `iPod_Control/Music/F##/`."""
+    music = mount_point / "iPod_Control" / "Music"
+    if not music.is_dir():
+        return
+    for f_dir in sorted(music.iterdir()):
+        if not (f_dir.is_dir() and f_dir.name.startswith("F")):
+            continue
+        for entry in f_dir.iterdir():
+            if entry.is_file():
+                yield entry
+
+
+def referenced_ipod_paths(db: Any) -> set[Path]:
+    """Absolute paths of every F## file referenced by a track in `db`."""
+    gpod = _require_gpod()
+    out: set[Path] = set()
+    for i in range(len(db)):
+        track = db[i]._track
+        try:
+            p = gpod.itdb_filename_on_ipod(track)
+        except Exception:
+            continue
+        if p:
+            out.add(Path(p.decode("utf-8") if isinstance(p, bytes) else p))
+    return out
+
+
 @dataclass(frozen=True)
 class MusicTags:
     title: str
