@@ -262,15 +262,32 @@ class MusicTags:
     filetype_label: str   # human-readable filetype tag ("MPEG audio file", ...)
 
 
-def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> Any:
-    """Create an Itdb_Track for `source`, copy the file to F## pool, add to MPL.
+def add_music_track(
+    db: Any,
+    source: Path,
+    tags: MusicTags,
+    sha1: str,
+    *,
+    kind: Kind = Kind.MUSIC,
+    podcast_playlist: Any | None = None,
+) -> Any:
+    """Create an Itdb_Track for `source`, copy the file to F## pool, add to a playlist.
 
-    Returns the raw `Itdb_Track` pointer. The caller should read `track.id`
-    only AFTER the database has been committed (`open_readwrite` exit) —
-    libgpod assigns the id during `itdb_write`, not on `itdb_track_add`.
+    ``kind=MUSIC`` → mediatype=AUDIO, added to the master playlist (MPL).
+    ``kind=PODCAST`` → mediatype=PODCAST, added to ``podcast_playlist`` only
+    (never MPL — that's what keeps episodes out of Songs/Albums/Artists).
+    The writer groups podcast-playlist members by ``track.album`` into mhip
+    groups automatically, so callers should set ``tags.album`` to the show.
+
+    Returns the raw ``Itdb_Track`` pointer. The caller should read ``track.id``
+    only AFTER the database has been committed (``open_readwrite`` exit) —
+    libgpod assigns the id during ``itdb_write``, not on ``itdb_track_add``.
     """
     gpod = _require_gpod()
     import socket
+
+    if kind == Kind.PODCAST and podcast_playlist is None:
+        raise DbWriteError("podcast track needs a podcast_playlist to be added to")
 
     track = gpod.itdb_track_new()
 
@@ -284,7 +301,10 @@ def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> Any:
     _set_str("genre", tags.genre)
     _set_str("filetype", tags.filetype_label)
 
-    track.mediatype = gpod.ITDB_MEDIATYPE_AUDIO   # 0x01
+    track.mediatype = (
+        gpod.ITDB_MEDIATYPE_PODCAST if kind == Kind.PODCAST
+        else gpod.ITDB_MEDIATYPE_AUDIO
+    )
     track.tracklen = tags.duration_ms
     track.size = tags.size_bytes
     if tags.bitrate_kbps is not None:
@@ -323,10 +343,45 @@ def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> Any:
         "charset": "UTF-8",
     })
 
-    mpl = gpod.itdb_playlist_mpl(db._itdb)
-    gpod.itdb_playlist_add_track(mpl, track, -1)
+    if kind == Kind.PODCAST:
+        gpod.itdb_playlist_add_track(podcast_playlist, track, -1)
+    else:
+        mpl = gpod.itdb_playlist_mpl(db._itdb)
+        gpod.itdb_playlist_add_track(mpl, track, -1)
 
     return track
+
+
+def count_podcast_playlists(db: Any) -> int:
+    """Number of playlists with ``podcastflag == ITDB_PL_FLAG_PODCASTS``."""
+    gpod = _require_gpod()
+    pls = db.Playlists
+    return sum(
+        1 for i in range(len(pls))
+        if gpod.itdb_playlist_is_podcasts(pls[i]._pl) == 1
+    )
+
+
+def ensure_podcast_playlist(db: Any) -> Any:
+    """Return the (single) podcasts playlist, creating one if absent.
+
+    The caller must already hold the DB open read-write. Refuses to proceed
+    if the device somehow has more than one podcast-flagged playlist — that
+    would make routing ambiguous and violate the "exactly one" invariant.
+    """
+    gpod = _require_gpod()
+    existing = gpod.itdb_playlist_podcasts(db._itdb)
+    if existing is not None:
+        if count_podcast_playlists(db) > 1:
+            raise DbWriteError(
+                "device has more than one podcast-flagged playlist; "
+                "delete duplicates before syncing podcasts"
+            )
+        return existing
+    pl = gpod.itdb_playlist_new(b"Podcasts", False)
+    gpod.itdb_playlist_set_podcasts(pl)
+    gpod.itdb_playlist_add(db._itdb, pl, -1)
+    return pl
 
 
 def attach_artwork(track: Any, image_path: Path) -> bool:

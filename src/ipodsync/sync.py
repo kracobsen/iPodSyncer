@@ -1,4 +1,4 @@
-"""`ipodsync sync <src>` — mirror ``<src>/music/**`` onto the iPod.
+"""`ipodsync sync <src>` — mirror ``<src>/music/**`` + ``<src>/podcasts/**`` onto the iPod.
 
 Two device-touching phases bracket a lazy middle:
 
@@ -14,11 +14,17 @@ Two device-touching phases bracket a lazy middle:
 Idempotent by construction: the dedupe key is the source-content sha1
 stashed in userdata (gtkpod ``.ext`` file), so a second run on an
 unchanged tree walks to step 3 and returns with "nothing to do".
+
+Podcast classification: files under ``<src>/podcasts/<show>/<episode>`` are
+routed to ``kind=podcast``; the commit loop sets mediatype=PODCAST, keeps
+them out of the MPL, and adds them to a dedicated podcast-flagged playlist.
+The show folder name is written into ``track.album`` so libgpod's writer
+groups episodes under the show name automatically (via mhip groupflag).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from rich.console import Console
@@ -45,11 +51,20 @@ _MUSIC_EXT = frozenset(
 
 
 @dataclass(frozen=True)
+class _SourceFile:
+    path: Path
+    kind: gpod_facade.Kind
+    show: str | None  # folder name under podcasts/ for kind=podcast, else None
+
+
+@dataclass(frozen=True)
 class _Plan:
     source: Path
     sha1: str
     probe_result: probe.ProbeResult
     source_size: int
+    kind: gpod_facade.Kind
+    show: str | None
 
     @property
     def codec(self) -> str:
@@ -88,13 +103,38 @@ def _sweep_orphans(mount_point: Path, log: Console) -> int:
     return removed
 
 
-def _walk_music(src: Path) -> list[Path]:
+def _walk_music(src: Path) -> list[_SourceFile]:
     music = src / "music"
     if not music.is_dir():
         return []
-    return sorted(
-        p for p in music.rglob("*") if p.is_file() and p.suffix.lower() in _MUSIC_EXT
-    )
+    return [
+        _SourceFile(path=p, kind=gpod_facade.Kind.MUSIC, show=None)
+        for p in sorted(music.rglob("*"))
+        if p.is_file() and p.suffix.lower() in _MUSIC_EXT
+    ]
+
+
+def _walk_podcasts(src: Path) -> list[_SourceFile]:
+    """Each immediate child of ``<src>/podcasts/`` is a show folder;
+    audio files nested at any depth under it are its episodes.
+    Files sitting directly in ``<src>/podcasts/`` (no show folder) are skipped.
+    """
+    root = src / "podcasts"
+    if not root.is_dir():
+        return []
+    out: list[_SourceFile] = []
+    for show_dir in sorted(root.iterdir()):
+        if not show_dir.is_dir():
+            continue
+        show = show_dir.name
+        for p in sorted(show_dir.rglob("*")):
+            if p.is_file() and p.suffix.lower() in _MUSIC_EXT:
+                out.append(_SourceFile(path=p, kind=gpod_facade.Kind.PODCAST, show=show))
+    return out
+
+
+def _walk_source(src: Path) -> list[_SourceFile]:
+    return _walk_music(src) + _walk_podcasts(src)
 
 
 def _progress(title: str) -> Progress:
@@ -109,12 +149,15 @@ def _progress(title: str) -> Progress:
     )
 
 
-def _scan(files: list[Path], log: Console) -> tuple[list[_Plan], list[tuple[Path, str]]]:
+def _scan(
+    files: list[_SourceFile], log: Console
+) -> tuple[list[_Plan], list[tuple[Path, str]]]:
     plans: list[_Plan] = []
     failures: list[tuple[Path, str]] = []
     with _progress("scan") as prog:
         task = prog.add_task("", total=len(files), current="")
-        for f in files:
+        for sf in files:
+            f = sf.path
             prog.update(task, current=f.name)
             try:
                 pr = probe.probe(f)
@@ -128,6 +171,8 @@ def _scan(files: list[Path], log: Console) -> tuple[list[_Plan], list[tuple[Path
                         sha1=sha,
                         probe_result=pr,
                         source_size=f.stat().st_size,
+                        kind=sf.kind,
+                        show=sf.show,
                     )
                 )
             prog.advance(task)
@@ -151,6 +196,15 @@ def _prepare(
                     probe.probe(tp.effective_path) if tp.transcoded else p.probe_result
                 )
                 tags = read_tags(p.source, tp.effective_path, eff_probe)
+                # Force album=show for podcasts — libgpod's podcast-playlist
+                # writer groups episodes into mhip groups by track.album, so
+                # overriding here is what gets us "each show a group on device".
+                if p.kind == gpod_facade.Kind.PODCAST and p.show:
+                    tags = replace(
+                        tags,
+                        album=p.show,
+                        albumartist=tags.albumartist or p.show,
+                    )
                 art = artwork.extract_cached(p.source, p.sha1)
             except (probe.ProbeError, transcode.TranscodeError, AddError) as e:
                 failures.append((p.source, str(e)))
@@ -184,11 +238,16 @@ def run(
         log.print(f"[red]✗[/] not a directory: {source_dir}")
         return 2
 
-    files = _walk_music(source_dir)
+    files = _walk_source(source_dir)
     if not files:
-        log.print(f"[yellow]![/] no audio files under {source_dir / 'music'}")
+        log.print(
+            f"[yellow]![/] no audio files under {source_dir / 'music'} or "
+            f"{source_dir / 'podcasts'}"
+        )
         return 0
-    log.print(f"found {len(files)} file(s) under {source_dir / 'music'}")
+    n_music = sum(1 for sf in files if sf.kind == gpod_facade.Kind.MUSIC)
+    n_pod = sum(1 for sf in files if sf.kind == gpod_facade.Kind.PODCAST)
+    log.print(f"found {n_music} music + {n_pod} podcast file(s) under {source_dir}")
 
     plans, scan_failures = _scan(files, log)
     if not plans:
@@ -302,12 +361,23 @@ def run(
                             pruned += 1
                             prog.advance(task)
                 if prepared:
+                    need_pod_pl = any(
+                        it.plan.kind == gpod_facade.Kind.PODCAST for it in prepared
+                    )
+                    pod_pl = (
+                        gpod_facade.ensure_podcast_playlist(db) if need_pod_pl else None
+                    )
                     with _progress("commit") as prog:
                         task = prog.add_task("", total=len(prepared), current="")
                         for it in prepared:
                             prog.update(task, current=it.plan.source.name)
                             track = gpod_facade.add_music_track(
-                                db, it.effective, it.tags, it.plan.sha1
+                                db,
+                                it.effective,
+                                it.tags,
+                                it.plan.sha1,
+                                kind=it.plan.kind,
+                                podcast_playlist=pod_pl,
                             )
                             if it.art_path is not None:
                                 gpod_facade.attach_artwork(track, it.art_path)
