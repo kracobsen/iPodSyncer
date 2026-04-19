@@ -40,7 +40,7 @@ export PKG_CONFIG_PATH
 log "Installing Homebrew deps"
 brew install \
   pkg-config meson ninja swig \
-  glib libplist sqlite gdk-pixbuf libxml2 \
+  glib libplist sqlite gdk-pixbuf libxml2 libusb \
   pygobject3 ffmpeg
 
 log "Creating project venv at $VENV_DIR"
@@ -90,7 +90,7 @@ PATH="$VENV_DIR/bin:$BREW_PREFIX/bin:$PATH" meson setup build \
   -Dudev=disabled \
   -Dios=disabled \
   -Dsgutils=disabled \
-  -Dsysinfo-ng=disabled \
+  -Dsysinfo-ng=enabled \
   -Dmono=disabled \
   -Dtaglib=disabled \
   -Ddoc=disabled \

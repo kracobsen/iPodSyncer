@@ -14,6 +14,7 @@ dependencies = [
     "typer>=0.12",
     "mutagen>=1.47",
     "Pillow>=10.0",
+    "libusb1>=3.0",  # macOS-side SysInfoExtended probe (iPod USB bus/addr lookup)
     # python-gpod is built from source via scripts/bootstrap.sh; not on PyPI.
 ]
 
