@@ -85,6 +85,23 @@ def mount(device: IpodDevice) -> MountResult:
     return MountResult(mount_point=mnt, already_mounted=False, managed=True)
 
 
+def umount_quiet(mount_point: Path) -> None:
+    """Unmount a path we created, without spinning the disk down.
+
+    Used by read-only commands (e.g. `ls`) that auto-mounted the iPod and want
+    to clean up after themselves without the side-effect of `diskutil eject`.
+    No-op if the path isn't one of our managed mounts.
+    """
+    if not is_managed(mount_point):
+        return
+    try:
+        subprocess.run(["sudo", "/sbin/umount", str(mount_point)], check=True)
+    except subprocess.CalledProcessError as e:
+        raise MountError(f"umount failed (exit {e.returncode}) on {mount_point}") from e
+    with contextlib.suppress(OSError):
+        mount_point.rmdir()
+
+
 def unmount(device: IpodDevice) -> Path | None:
     """Unmount + spin the iPod down. Returns the prior mount point (if any)."""
     mnt = device.mount_point

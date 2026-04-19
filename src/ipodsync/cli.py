@@ -10,6 +10,7 @@ import typer
 
 from ipodsync import __version__
 from ipodsync import doctor as doctor_mod
+from ipodsync import ls as ls_mod
 from ipodsync.device import ops as device_ops
 
 app = typer.Typer(
@@ -48,9 +49,19 @@ def mount(
 
 
 @app.command(name="ls")
-def ls_() -> None:
-    """List tracks on the mounted iPod."""
-    _stub("ls")
+def ls_(
+    kind: str | None = typer.Option(
+        None,
+        "--kind",
+        help="Filter: music | podcast | book",
+        case_sensitive=False,
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit stable JSON on stdout instead of a table."
+    ),
+) -> None:
+    """List tracks on the mounted iPod (read-only)."""
+    raise typer.Exit(code=ls_mod.run(kind=kind, as_json=as_json))
 
 
 @app.command()
