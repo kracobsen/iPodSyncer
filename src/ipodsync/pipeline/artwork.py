@@ -80,11 +80,17 @@ def extract(source: Path) -> bytes | None:
     return _extract_embedded(source) or _extract_sibling(source)
 
 
-def extract_cached(source: Path, sha1: str) -> bytes | None:
-    """Cached variant of :func:`extract`. Uses the source content-hash as key."""
+def extract_cached(source: Path, sha1: str) -> Path | None:
+    """Cached variant of :func:`extract`; returns the path to a cached image
+    file (suitable for ``itdb_track_set_thumbnails``), or ``None`` if the
+    source has no recoverable cover art.
+
+    libgpod/gdk-pixbuf sniff format from magic bytes, so the cached file's
+    ``.bin`` suffix is fine regardless of whether the payload is JPEG/PNG.
+    """
     hit = _hit_path(sha1)
     if hit.is_file():
-        return hit.read_bytes()
+        return hit
     if _miss_path(sha1).is_file():
         return None
 
@@ -93,6 +99,6 @@ def extract_cached(source: Path, sha1: str) -> bytes | None:
         tmp = hit.with_suffix(hit.suffix + ".tmp")
         tmp.write_bytes(data)
         tmp.replace(hit)
-    else:
-        _miss_path(sha1).touch()
-    return data
+        return hit
+    _miss_path(sha1).touch()
+    return None

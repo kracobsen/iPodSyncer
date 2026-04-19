@@ -269,13 +269,14 @@ def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> Any:
     return track
 
 
-def attach_artwork(track: Any, image_data: bytes) -> bool:
+def attach_artwork(track: Any, image_path: Path) -> bool:
     """Queue cover art on `track`; libgpod renders + writes F1_1.ithmb at commit.
 
-    Uses `itdb_track_set_thumbnails_from_data` so we avoid round-tripping the
-    image through a temp file. gdk-pixbuf handles format decoding (JPEG/PNG);
-    the per-model thumbnail size table lives inside libgpod.
+    The SWIG binding for `itdb_track_set_thumbnails_from_data` refuses
+    Python `bytes` (guchar const* typemap isn't wired up), so we go through
+    the file-path variant. gdk-pixbuf sniffs format from magic bytes, so
+    the cache file's `.bin` suffix doesn't matter.
     """
     gpod = _require_gpod()
-    ok = gpod.itdb_track_set_thumbnails_from_data(track, image_data, len(image_data))
+    ok = gpod.itdb_track_set_thumbnails(track, str(image_path))
     return bool(ok)

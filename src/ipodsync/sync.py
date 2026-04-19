@@ -65,7 +65,7 @@ class _Prepared:
     plan: _Plan
     effective: Path
     tags: gpod_facade.MusicTags
-    art_bytes: bytes | None
+    art_path: Path | None
     transcoded: bool
 
 
@@ -141,7 +141,7 @@ def _prepare(
                         plan=p,
                         effective=tp.effective_path,
                         tags=tags,
-                        art_bytes=art,
+                        art_path=art,
                         transcoded=tp.transcoded,
                     )
                 )
@@ -259,8 +259,8 @@ def run(
                     track = gpod_facade.add_music_track(
                         db, it.effective, it.tags, it.plan.sha1
                     )
-                    if it.art_bytes:
-                        gpod_facade.attach_artwork(track, it.art_bytes)
+                    if it.art_path is not None:
+                        gpod_facade.attach_artwork(track, it.art_path)
                     added += 1
                     prog.advance(task)
         except gpod_facade.DbWriteError as e:

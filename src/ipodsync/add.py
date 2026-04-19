@@ -235,9 +235,9 @@ def run(source: Path, *, strict: bool = False, console: Console | None = None) -
                 # Artwork always pulled from the ORIGINAL source: embedded art
                 # is dropped by `-vn` during transcode, and sibling cover files
                 # live next to the source anyway.
-                art_bytes = artwork.extract_cached(source, sha1)
-                if art_bytes:
-                    art_attached = gpod_facade.attach_artwork(added_track, art_bytes)
+                art_path = artwork.extract_cached(source, sha1)
+                if art_path is not None:
+                    art_attached = gpod_facade.attach_artwork(added_track, art_path)
         except gpod_facade.GpodImportError as e:
             log.print(f"[red]✗[/] {e}")
             return 1
