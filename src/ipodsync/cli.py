@@ -15,6 +15,7 @@ from ipodsync import add as add_mod
 from ipodsync import doctor as doctor_mod
 from ipodsync import ls as ls_mod
 from ipodsync import restore as restore_mod
+from ipodsync import sync as sync_mod
 from ipodsync.device import ops as device_ops
 
 app = typer.Typer(
@@ -103,9 +104,23 @@ def rm() -> None:
 
 
 @app.command()
-def sync() -> None:
-    """Mirror a source directory tree to the iPod."""
-    _stub("sync")
+def sync(
+    ctx: typer.Context,
+    source: Path = typer.Argument(  # noqa: B008
+        ...,
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        help="Source directory; music scanned under <src>/music/**",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the plan without touching the device's DB."
+    ),
+) -> None:
+    """Mirror ``<src>/music/**`` to the iPod (music-only for now; idempotent)."""
+    strict = bool((ctx.obj or {}).get("strict", False))
+    raise typer.Exit(code=sync_mod.run(source, strict=strict, dry_run=dry_run))
 
 
 @app.command()

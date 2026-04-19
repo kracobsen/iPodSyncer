@@ -167,6 +167,22 @@ def find_track_id_by_hash(db: Any, sha1: str) -> int | None:
     return None
 
 
+def collect_sha1_hashes(db: Any) -> set[str]:
+    """All source-content sha1 hashes stashed in track userdata (phase 6+)."""
+    out: set[str] = set()
+    for i in range(len(db)):
+        track = db[i]
+        try:
+            ud = track["userdata"]
+        except KeyError:
+            continue
+        if isinstance(ud, dict):
+            h = ud.get("sha1_hash")
+            if h:
+                out.add(str(h))
+    return out
+
+
 @dataclass(frozen=True)
 class MusicTags:
     title: str

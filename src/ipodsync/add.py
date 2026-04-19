@@ -72,29 +72,34 @@ def _first(d: mutagen.FileType, key: str) -> str:
     return ""
 
 
-def read_tags(path: Path, probe_result: probe.ProbeResult) -> gpod_facade.MusicTags:
-    """mutagen-backed tag read for the file we'll hand to libgpod.
+def read_tags(
+    tag_source: Path,
+    effective_path: Path,
+    probe_result: probe.ProbeResult,
+) -> gpod_facade.MusicTags:
+    """mutagen-backed tag read.
 
-    ``path`` is the *effective* file (post-transcode if the source needed
-    re-encoding), so duration/bitrate/size reflect what lands on the iPod.
+    String tags come from ``tag_source`` (always the original file) because
+    ffmpeg's ``-map_metadata 0`` silently drops some Vorbis-comment fields
+    when muxing into MP4 — Opus title/artist don't make it through. Audio
+    metrics (duration/bitrate/sample-rate/size) come from the effective
+    file's probe and stat so they reflect what lands on the iPod.
     """
-    af = mutagen.File(str(path), easy=True)
+    af = mutagen.File(str(tag_source), easy=True)
     if af is None or af.info is None:
-        raise AddError(f"mutagen could not parse {path}")
+        raise AddError(f"mutagen could not parse {tag_source}")
 
     track_nr, tracks = _pair(_first(af, "tracknumber"))
     cd_nr, cds = _pair(_first(af, "discnumber"))
     date = _first(af, "date")
     year = int(date[:4]) if date[:4].isdigit() else None
 
-    title = _first(af, "title") or path.stem
+    title = _first(af, "title") or tag_source.stem
     artist = _first(af, "artist")
     album = _first(af, "album")
     albumartist = _first(af, "albumartist") or artist
     genre = _first(af, "genre")
 
-    # Prefer probe numbers over mutagen's (ffprobe sees the container
-    # clearly; mutagen can miscount for WAV/AIFF).
     duration_ms = probe_result.duration_ms or (
         int(round(af.info.length * 1000)) if af.info.length else 0
     )
@@ -119,7 +124,7 @@ def read_tags(path: Path, probe_result: probe.ProbeResult) -> gpod_facade.MusicT
         duration_ms=duration_ms,
         bitrate_kbps=bitrate_kbps,
         samplerate=samplerate,
-        size_bytes=path.stat().st_size,
+        size_bytes=effective_path.stat().st_size,
         filetype_label=_filetype_label(probe_result),
     )
 
@@ -166,9 +171,10 @@ def run(source: Path, *, strict: bool = False, console: Console | None = None) -
     else:
         eff_probe = src_probe
 
-    # 4. Tags from the effective (post-transcode) file.
+    # 4. Tags from the original source (string metadata); audio metrics from
+    #    the effective file via eff_probe / stat.
     try:
-        tags = read_tags(plan.effective_path, eff_probe)
+        tags = read_tags(source, plan.effective_path, eff_probe)
     except AddError as e:
         log.print(f"[red]✗[/] {e}")
         return 2
