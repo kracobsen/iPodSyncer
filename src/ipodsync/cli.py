@@ -10,6 +10,7 @@ import typer
 
 from ipodsync import __version__
 from ipodsync import doctor as doctor_mod
+from ipodsync.device import ops as device_ops
 
 app = typer.Typer(
     name="ipodsync",
@@ -37,9 +38,13 @@ def version() -> None:
 
 
 @app.command()
-def mount() -> None:
+def mount(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show the mount plan without touching the device."
+    ),
+) -> None:
     """Mount a connected iPod Classic (bypasses Finder / diskutil)."""
-    _stub("mount")
+    raise typer.Exit(code=device_ops.run_mount(dry_run=dry_run))
 
 
 @app.command(name="ls")
@@ -74,8 +79,8 @@ def doctor() -> None:
 
 @app.command()
 def eject() -> None:
-    """Unmount the iPod cleanly."""
-    _stub("eject")
+    """Unmount the iPod cleanly and spin the disk down."""
+    raise typer.Exit(code=device_ops.run_eject())
 
 
 @playlist_app.command("create")
