@@ -9,6 +9,7 @@ from __future__ import annotations
 import typer
 
 from ipodsync import __version__
+from ipodsync import doctor as doctor_mod
 
 app = typer.Typer(
     name="ipodsync",
@@ -68,7 +69,7 @@ def sync() -> None:
 @app.command()
 def doctor() -> None:
     """Check host (and device, when mounted) for common setup problems."""
-    _stub("doctor")
+    raise typer.Exit(code=doctor_mod.run())
 
 
 @app.command()
