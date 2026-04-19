@@ -155,6 +155,7 @@ def run(source: Path, *, console: Console | None = None) -> int:
             return 1
         log.print(f"[dim]snapshot {pre.timestamp}[/]")
 
+        added_track = None
         try:
             with gpod_facade.open_readwrite(mnt) as db:
                 existing_id = gpod_facade.find_track_id_by_hash(db, sha1)
@@ -164,7 +165,7 @@ def run(source: Path, *, console: Console | None = None) -> int:
                         f"(sha1={sha1[:10]}…)"
                     )
                     return 0
-                new_id = gpod_facade.add_music_track(db, source, tags, sha1)
+                added_track = gpod_facade.add_music_track(db, source, tags, sha1)
         except gpod_facade.GpodImportError as e:
             log.print(f"[red]✗[/] {e}")
             return 1
@@ -176,6 +177,8 @@ def run(source: Path, *, console: Console | None = None) -> int:
             log.print(f"[dim]  → roll back with: ipodsync restore --snapshot {pre.timestamp}[/]")
             return 1
 
+        # id is only valid post-commit (assigned by itdb_write).
+        new_id = int(added_track.id) if added_track is not None else 0
         log.print(
             f"[green]✓[/] added [bold]{tags.title}[/] — {tags.artist or '—'} "
             f"(track #{new_id})"

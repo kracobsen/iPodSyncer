@@ -186,11 +186,12 @@ class MusicTags:
     filetype_label: str   # human-readable filetype tag ("MPEG audio file", ...)
 
 
-def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> int:
+def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> Any:
     """Create an Itdb_Track for `source`, copy the file to F## pool, add to MPL.
 
-    Returns the new track's iTunesDB id. Caller is responsible for closing the
-    database to persist writes.
+    Returns the raw `Itdb_Track` pointer. The caller should read `track.id`
+    only AFTER the database has been committed (`open_readwrite` exit) —
+    libgpod assigns the id during `itdb_write`, not on `itdb_track_add`.
     """
     gpod = _require_gpod()
     import socket
@@ -249,4 +250,4 @@ def add_music_track(db: Any, source: Path, tags: MusicTags, sha1: str) -> int:
     mpl = gpod.itdb_playlist_mpl(db._itdb)
     gpod.itdb_playlist_add_track(mpl, track, -1)
 
-    return int(track.id)
+    return track
