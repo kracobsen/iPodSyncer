@@ -1,9 +1,12 @@
-"""`ipodsync add <file>` — copy one music file onto the iPod.
+"""`ipodsync add <file>` — copy one audio file onto the iPod.
 
-Phase 6 is the thinnest possible vertical slice through the writer: one file,
-extension-gated passthrough only (MP3 / M4A), no transcode, no artwork, no
-pipeline. Every write is preceded by a snapshot (phase 5) so a bad add can
-be rolled back.
+Phase 6 was passthrough-only (MP3 / M4A, extension-gated). Phase 7 added
+artwork. Phase 8 inserts ``probe`` + ``transcode`` stages: ffprobe decides
+passthrough vs re-encode (mp3/aac/alac/pcm → passthrough; flac/opus/vorbis/
+etc → AAC 256 kbps .m4a, cached on disk). ``--strict`` refuses to transcode.
+
+Every write is preceded by a snapshot (phase 5) so a bad add can be rolled
+back.
 """
 
 from __future__ import annotations
@@ -18,18 +21,30 @@ from ipodsync.device import mount as mount_mod
 from ipodsync.device import snapshot as snap
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
-from ipodsync.pipeline import artwork
+from ipodsync.pipeline import artwork, probe, transcode
 
-# Passthrough set for phase 6: no codec probe yet, we trust the extension.
-# Phase 8 widens this via ffprobe-backed classification.
-_SUPPORTED_EXT: dict[str, str] = {
-    ".mp3": "MPEG audio file",
-    ".m4a": "AAC audio file",
+# codec_name → iTunes-style filetype label (cosmetic; shown in the iPod's
+# per-track info panel). Unknown codecs fall through to a generic string.
+_CODEC_LABEL: dict[str, str] = {
+    "mp3": "MPEG audio file",
+    "aac": "AAC audio file",
+    "alac": "Apple Lossless audio file",
 }
 
 
 class AddError(RuntimeError):
     pass
+
+
+def _filetype_label(p: probe.ProbeResult) -> str:
+    if p.codec_name in _CODEC_LABEL:
+        return _CODEC_LABEL[p.codec_name]
+    if p.codec_name.startswith("pcm_"):
+        if "wav" in p.container:
+            return "WAV audio file"
+        if "aiff" in p.container:
+            return "AIFF audio file"
+    return f"{p.codec_name or 'unknown'} audio file"
 
 
 def _pair(val: str | None) -> tuple[int | None, int | None]:
@@ -57,13 +72,12 @@ def _first(d: mutagen.FileType, key: str) -> str:
     return ""
 
 
-def probe_tags(path: Path) -> gpod_facade.MusicTags:
-    ext = path.suffix.lower()
-    if ext not in _SUPPORTED_EXT:
-        raise AddError(
-            f"unsupported file extension {ext!r}; phase 6 accepts "
-            + " ".join(_SUPPORTED_EXT)
-        )
+def read_tags(path: Path, probe_result: probe.ProbeResult) -> gpod_facade.MusicTags:
+    """mutagen-backed tag read for the file we'll hand to libgpod.
+
+    ``path`` is the *effective* file (post-transcode if the source needed
+    re-encoding), so duration/bitrate/size reflect what lands on the iPod.
+    """
     af = mutagen.File(str(path), easy=True)
     if af is None or af.info is None:
         raise AddError(f"mutagen could not parse {path}")
@@ -79,10 +93,17 @@ def probe_tags(path: Path) -> gpod_facade.MusicTags:
     albumartist = _first(af, "albumartist") or artist
     genre = _first(af, "genre")
 
-    info = af.info
-    duration_ms = int(round(info.length * 1000)) if info.length else 0
-    bitrate_kbps = int(info.bitrate / 1000) if getattr(info, "bitrate", 0) else None
-    samplerate = int(info.sample_rate) if getattr(info, "sample_rate", 0) else None
+    # Prefer probe numbers over mutagen's (ffprobe sees the container
+    # clearly; mutagen can miscount for WAV/AIFF).
+    duration_ms = probe_result.duration_ms or (
+        int(round(af.info.length * 1000)) if af.info.length else 0
+    )
+    bitrate_kbps = probe_result.bitrate_kbps or (
+        int(af.info.bitrate / 1000) if getattr(af.info, "bitrate", 0) else None
+    )
+    samplerate = probe_result.sample_rate or (
+        int(af.info.sample_rate) if getattr(af.info, "sample_rate", 0) else None
+    )
 
     return gpod_facade.MusicTags(
         title=title,
@@ -99,24 +120,58 @@ def probe_tags(path: Path) -> gpod_facade.MusicTags:
         bitrate_kbps=bitrate_kbps,
         samplerate=samplerate,
         size_bytes=path.stat().st_size,
-        filetype_label=_SUPPORTED_EXT[ext],
+        filetype_label=_filetype_label(probe_result),
     )
 
 
-def run(source: Path, *, console: Console | None = None) -> int:
+def run(source: Path, *, strict: bool = False, console: Console | None = None) -> int:
     log = console or Console(stderr=True)
 
     if not source.exists():
         log.print(f"[red]✗[/] file not found: {source}")
         return 2
 
+    # 1. Codec probe on the source file.
     try:
-        tags = probe_tags(source)
-    except AddError as e:
+        src_probe = probe.probe(source)
+    except probe.ProbeError as e:
         log.print(f"[red]✗[/] {e}")
         return 2
 
+    # 2. Dedupe key is the SOURCE content-hash — a second `add` of the same
+    #    source stays idempotent regardless of transcode cache state.
     sha1 = gpod_facade.content_hash(source)
+
+    # 3. Passthrough vs transcode decision.
+    try:
+        plan = transcode.plan(source, src_probe, sha1, strict=strict)
+    except transcode.StrictRefusal as e:
+        log.print(f"[red]✗[/] {e}")
+        return 4
+    except transcode.TranscodeError as e:
+        log.print(f"[red]✗[/] transcode failed: {e}")
+        return 1
+
+    if plan.transcoded:
+        log.print(
+            f"[dim]transcode {src_probe.codec_name} → aac "
+            f"({plan.effective_path.name})[/]"
+        )
+        # Re-probe the transcoded file so duration/bitrate reflect the output.
+        try:
+            eff_probe = probe.probe(plan.effective_path)
+        except probe.ProbeError as e:
+            log.print(f"[red]✗[/] re-probe failed: {e}")
+            return 1
+    else:
+        eff_probe = src_probe
+
+    # 4. Tags from the effective (post-transcode) file.
+    try:
+        tags = read_tags(plan.effective_path, eff_probe)
+    except AddError as e:
+        log.print(f"[red]✗[/] {e}")
+        return 2
 
     try:
         device = find_ipod()
@@ -167,8 +222,13 @@ def run(source: Path, *, console: Console | None = None) -> int:
                         f"(sha1={sha1[:10]}…)"
                     )
                     return 0
-                added_track = gpod_facade.add_music_track(db, source, tags, sha1)
+                added_track = gpod_facade.add_music_track(
+                    db, plan.effective_path, tags, sha1
+                )
 
+                # Artwork always pulled from the ORIGINAL source: embedded art
+                # is dropped by `-vn` during transcode, and sibling cover files
+                # live next to the source anyway.
                 art_bytes = artwork.extract_cached(source, sha1)
                 if art_bytes:
                     art_attached = gpod_facade.attach_artwork(added_track, art_bytes)

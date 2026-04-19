@@ -32,6 +32,18 @@ playlist_app = typer.Typer(
 app.add_typer(playlist_app)
 
 
+@app.callback()
+def _root(
+    ctx: typer.Context,
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Refuse to transcode: fail instead of re-encoding non-native codecs.",
+    ),
+) -> None:
+    ctx.obj = {"strict": strict}
+
+
 def _stub(cmd: str) -> None:
     typer.echo(f"ipodsync {cmd}: not implemented yet (see plans/ipodsyncer-v0.1.md)")
 
@@ -70,12 +82,18 @@ def ls_(
 
 @app.command()
 def add(
+    ctx: typer.Context,
     file: Path = typer.Argument(  # noqa: B008  (typer idiom)
-        ..., exists=True, dir_okay=False, readable=True, help="MP3 or M4A file"
+        ...,
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Audio file (mp3/m4a/flac/opus/ogg/wav/aiff …)",
     ),
 ) -> None:
-    """Add a single music file (.mp3 or .m4a) to the iPod."""
-    raise typer.Exit(code=add_mod.run(file))
+    """Add a single audio file to the iPod; transcodes if the codec isn't native."""
+    strict = bool((ctx.obj or {}).get("strict", False))
+    raise typer.Exit(code=add_mod.run(file, strict=strict))
 
 
 @app.command()
