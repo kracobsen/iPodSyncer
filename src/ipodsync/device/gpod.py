@@ -305,6 +305,16 @@ def add_music_track(
         gpod.ITDB_MEDIATYPE_PODCAST if kind == Kind.PODCAST
         else gpod.ITDB_MEDIATYPE_AUDIO
     )
+    if kind == Kind.PODCAST:
+        # 6G firmware won't expose podcast episodes in the Podcasts menu unless
+        # mark_unplayed=0x02 is set (tracks with neither unplayed flag nor a
+        # positive playcount are hidden). The other three flags go along with
+        # the same "treat as podcast" contract per libgpod's own convention;
+        # technically phase 12 territory but navigation depends on them.
+        track.skip_when_shuffling = 0x01
+        track.remember_playback_position = 0x01
+        track.flag4 = 0x01
+        track.mark_unplayed = 0x02
     track.tracklen = tags.duration_ms
     track.size = tags.size_bytes
     if tags.bitrate_kbps is not None:
