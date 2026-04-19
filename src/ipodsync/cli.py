@@ -11,6 +11,7 @@ import typer
 from ipodsync import __version__
 from ipodsync import doctor as doctor_mod
 from ipodsync import ls as ls_mod
+from ipodsync import restore as restore_mod
 from ipodsync.device import ops as device_ops
 
 app = typer.Typer(
@@ -92,6 +93,27 @@ def doctor() -> None:
 def eject() -> None:
     """Unmount the iPod cleanly and spin the disk down."""
     raise typer.Exit(code=device_ops.run_eject())
+
+
+@app.command()
+def snapshot() -> None:
+    """Copy iTunesDB/iTunesCDB/ArtworkDB to the local snapshots dir."""
+    raise typer.Exit(code=restore_mod.run_snapshot())
+
+
+@app.command()
+def restore(
+    snapshot: str | None = typer.Option(
+        None,
+        "--snapshot",
+        help="Timestamp (YYYYMMDDTHHMMSSZ) or 'latest'. Omit to list.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """List snapshots, or roll back to one with --snapshot."""
+    raise typer.Exit(
+        code=restore_mod.run_restore(selector=snapshot, assume_yes=yes)
+    )
 
 
 @playlist_app.command("create")
