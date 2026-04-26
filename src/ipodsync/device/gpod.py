@@ -262,6 +262,28 @@ class MusicTags:
     filetype_label: str   # human-readable filetype tag ("MPEG audio file", ...)
 
 
+def ensure_m4b_suffix(source: Path, sha1: str) -> Path:
+    """For audiobook sources with the wrong extension, return a path whose
+    suffix is ``.m4b`` so ``itdb_cp_track_to_ipod`` names the destination
+    accordingly. Implemented as a cache-dir symlink — zero extra disk cost
+    regardless of how large the source file is. The symlink target is the
+    resolved source path; the symlink's mtime follows the source because
+    ``itdb_cp`` reads through the link.
+    """
+    if source.suffix.lower() == ".m4b":
+        return source
+    cache = Path.home() / "Library" / "Caches" / "ipodsync" / "audiobooks"
+    cache.mkdir(parents=True, exist_ok=True)
+    link = cache / f"{sha1}.m4b"
+    target = source.resolve()
+    if link.is_symlink() or link.exists():
+        if link.is_symlink() and link.readlink() == target:
+            return link
+        link.unlink()
+    link.symlink_to(target)
+    return link
+
+
 def add_music_track(
     db: Any,
     source: Path,
@@ -278,6 +300,12 @@ def add_music_track(
     (never MPL — that's what keeps episodes out of Songs/Albums/Artists).
     The writer groups podcast-playlist members by ``track.album`` into mhip
     groups automatically, so callers should set ``tags.album`` to the show.
+    ``kind=AUDIOBOOK`` → mediatype=AUDIOBOOK, added to the MPL. The iPod
+    firmware routes mediatype=0x08 tracks into the Books menu and filters
+    them out of Songs / Albums / Artists automatically. Caller is expected
+    to have pre-normalised the source extension to ``.m4b`` (see
+    :func:`ensure_m4b_suffix`) — the ``.m4b`` vs ``.m4a`` distinction is
+    firmware-load-bearing per FEASIBILITY.
 
     Returns the raw ``Itdb_Track`` pointer. The caller should read ``track.id``
     only AFTER the database has been committed (``open_readwrite`` exit) —
@@ -301,10 +329,10 @@ def add_music_track(
     _set_str("genre", tags.genre)
     _set_str("filetype", tags.filetype_label)
 
-    track.mediatype = (
-        gpod.ITDB_MEDIATYPE_PODCAST if kind == Kind.PODCAST
-        else gpod.ITDB_MEDIATYPE_AUDIO
-    )
+    track.mediatype = {
+        Kind.PODCAST: gpod.ITDB_MEDIATYPE_PODCAST,
+        Kind.AUDIOBOOK: gpod.ITDB_MEDIATYPE_AUDIOBOOK,
+    }.get(kind, gpod.ITDB_MEDIATYPE_AUDIO)
     if kind == Kind.PODCAST:
         # 6G firmware won't expose podcast episodes in the Podcasts menu unless
         # mark_unplayed=0x02 is set (tracks with neither unplayed flag nor a
@@ -315,6 +343,12 @@ def add_music_track(
         track.remember_playback_position = 0x01
         track.flag4 = 0x01
         track.mark_unplayed = 0x02
+    elif kind == Kind.AUDIOBOOK:
+        # Keeps audiobooks out of Shuffle Songs and lets the firmware bookmark
+        # the playback position across pause/eject, which is what makes the
+        # Books menu usable at all.
+        track.skip_when_shuffling = 0x01
+        track.remember_playback_position = 0x01
     track.tracklen = tags.duration_ms
     track.size = tags.size_bytes
     if tags.bitrate_kbps is not None:

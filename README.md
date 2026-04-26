@@ -2,7 +2,7 @@
 
 macOS CLI for syncing music, podcasts, and audiobooks to an iPod Classic 6G running factory Apple firmware.
 
-Status: in progress — phases 0–11 of [plans/ipodsyncer-v0.1.md](./plans/ipodsyncer-v0.1.md) landed. Music sync, artwork, transcode, prune, and podcast classification + flagged playlist work on-device. Per-track podcast playback flags (phase 12) + audiobooks / playlists still pending. See [FEASIBILITY.md](./FEASIBILITY.md) for the spec.
+Status: in progress — phases 0–11 + 13 of [plans/ipodsyncer-v0.1.md](./plans/ipodsyncer-v0.1.md) landed. Music sync, artwork, transcode, prune, podcast classification + flagged playlist, and audiobook routing work on-device. Phase 12's per-track podcast flags shipped inside phase 11 (firmware dependency); playlists from M3U (phase 14) still pending. See [FEASIBILITY.md](./FEASIBILITY.md) for the spec.
 
 ## Scope (v0.1)
 
@@ -72,7 +72,7 @@ Implemented:
 - `ipodsync ls [--kind music|podcast|book] [--json]` — read-only track listing.
 - `ipodsync add <file>` — add one audio file. Probes codec, transcodes non-native formats to AAC ~256k VBR (cached), extracts embedded / sibling `cover.*` artwork, dedupes by source sha1. `--strict` (global) refuses to transcode.
 - `ipodsync rm [TRACK_IDS...] [--filter KEY=VALUE] [--kind K] [--dry-run] [-y]` — delete tracks. Positional ids and/or `--filter` on `title`/`artist`/`album`/`genre` (case-insensitive equality). Refuses without a selector. Removes from all playlists, deletes the `F##` file, drops the DB row.
-- `ipodsync sync <src> [--dry-run] [--prune]` — mirror `<src>/music/**` and `<src>/podcasts/<show>/**` to the iPod. Podcasts land in a dedicated podcast-flagged playlist, grouped by show folder name (libgpod writes mhip groups on `track.album`, which sync overrides to the show name). Podcast tracks do not appear under Songs / Albums / Artists. Idempotent: a second run on an unchanged tree is a no-op. `--prune` also removes on-device tracks no longer in the source and sweeps orphan `F##` files that aren't referenced by any DB track.
+- `ipodsync sync <src> [--dry-run] [--prune]` — mirror `<src>/music/**`, `<src>/podcasts/<show>/**`, and `<src>/audiobooks/<author>/*.{m4b,m4a}` to the iPod. Podcasts land in a dedicated podcast-flagged playlist, grouped by show folder name (libgpod writes mhip groups on `track.album`, which sync overrides to the show name); podcast tracks do not appear under Songs / Albums / Artists. Audiobooks land in the Books menu via mediatype=0x08 (firmware filters Songs/Albums/Artists on that bit); `.m4a` sources are auto-renamed to `.m4b` on copy via a cache symlink (the extension is firmware-load-bearing). Chapterless audiobook inputs log a warning. Idempotent: a second run on an unchanged tree is a no-op. `--prune` also removes on-device tracks no longer in the source and sweeps orphan `F##` files that aren't referenced by any DB track.
 - `ipodsync snapshot` — take a DB snapshot without mutating anything.
 - `ipodsync restore [--snapshot TS|latest] [-y]` — list snapshots or roll one back (takes a pre-restore snapshot first).
 - `ipodsync version`
@@ -96,6 +96,6 @@ ipodsync eject
 <src>/
   music/<artist>/<album>/<tracknum-title>.{mp3,m4a,flac,opus,ogg,wav,aiff}
   podcasts/<show>/<episode>.{mp3,m4a,flac,opus,ogg,wav,aiff}
-  audiobooks/<author>/<title>.m4b                # pending (phase 13)
+  audiobooks/<author>/<title>.m4b                # .m4a accepted and renamed
   playlists/<name>.m3u                           # pending (phase 14)
 ```

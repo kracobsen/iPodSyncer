@@ -1,4 +1,4 @@
-"""`ipodsync sync <src>` — mirror ``<src>/music/**`` + ``<src>/podcasts/**`` onto the iPod.
+"""`ipodsync sync <src>` — mirror ``<src>/{music,podcasts,audiobooks}/**`` onto the iPod.
 
 Two device-touching phases bracket a lazy middle:
 
@@ -20,6 +20,14 @@ routed to ``kind=podcast``; the commit loop sets mediatype=PODCAST, keeps
 them out of the MPL, and adds them to a dedicated podcast-flagged playlist.
 The show folder name is written into ``track.album`` so libgpod's writer
 groups episodes under the show name automatically (via mhip groupflag).
+
+Audiobook classification: files under ``<src>/audiobooks/<author>/*.{m4b,m4a}``
+are routed to ``kind=audiobook``. The writer sets mediatype=AUDIOBOOK and
+the firmware auto-filters Songs/Albums/Artists on that bit, so they land
+only in the Books menu. ``.m4a`` sources are exposed to libgpod through a
+cache-dir symlink with a ``.m4b`` suffix because the file-extension → menu
+routing is load-bearing on 6G. Chapterless inputs log a warning during the
+prepare stage (per-chapter navigation needs chapter atoms in the m4b).
 """
 
 from __future__ import annotations
@@ -48,6 +56,10 @@ from ipodsync.pipeline import artwork, probe, transcode
 _MUSIC_EXT = frozenset(
     {".mp3", ".m4a", ".flac", ".opus", ".ogg", ".wav", ".wave", ".aif", ".aiff"}
 )
+# v0.1 locked scope: audiobooks are pre-built m4b only. Accept .m4a too so we
+# can auto-rename-on-copy, since the .m4a vs .m4b split is a user-facing typo
+# trap. Anything else under audiobooks/ is out of scope.
+_AUDIOBOOK_EXT = frozenset({".m4b", ".m4a"})
 
 
 @dataclass(frozen=True)
@@ -133,8 +145,24 @@ def _walk_podcasts(src: Path) -> list[_SourceFile]:
     return out
 
 
+def _walk_audiobooks(src: Path) -> list[_SourceFile]:
+    """``<src>/audiobooks/<author>/*.{m4b,m4a}``. Non-m4a/m4b files are silently
+    skipped — v0.1 scope is pre-built m4b only (FEASIBILITY Appendix B)."""
+    root = src / "audiobooks"
+    if not root.is_dir():
+        return []
+    out: list[_SourceFile] = []
+    for author_dir in sorted(root.iterdir()):
+        if not author_dir.is_dir():
+            continue
+        for p in sorted(author_dir.rglob("*")):
+            if p.is_file() and p.suffix.lower() in _AUDIOBOOK_EXT:
+                out.append(_SourceFile(path=p, kind=gpod_facade.Kind.AUDIOBOOK, show=None))
+    return out
+
+
 def _walk_source(src: Path) -> list[_SourceFile]:
-    return _walk_music(src) + _walk_podcasts(src)
+    return _walk_music(src) + _walk_podcasts(src) + _walk_audiobooks(src)
 
 
 def _progress(title: str) -> Progress:
@@ -205,6 +233,17 @@ def _prepare(
                         album=p.show,
                         albumartist=tags.albumartist or p.show,
                     )
+                effective_path = tp.effective_path
+                if p.kind == gpod_facade.Kind.AUDIOBOOK:
+                    # .m4a → .m4b rename happens via a symlink handed to libgpod.
+                    effective_path = gpod_facade.ensure_m4b_suffix(
+                        effective_path, p.sha1
+                    )
+                    if p.probe_result.chapter_count == 0:
+                        log.print(
+                            f"[yellow]  · {p.source.name}: no chapter markers — "
+                            f"per-chapter nav won't work on device[/]"
+                        )
                 art = artwork.extract_cached(p.source, p.sha1)
             except (probe.ProbeError, transcode.TranscodeError, AddError) as e:
                 failures.append((p.source, str(e)))
@@ -212,7 +251,7 @@ def _prepare(
                 out.append(
                     _Prepared(
                         plan=p,
-                        effective=tp.effective_path,
+                        effective=effective_path,
                         tags=tags,
                         art_path=art,
                         transcoded=tp.transcoded,
@@ -241,13 +280,17 @@ def run(
     files = _walk_source(source_dir)
     if not files:
         log.print(
-            f"[yellow]![/] no audio files under {source_dir / 'music'} or "
-            f"{source_dir / 'podcasts'}"
+            f"[yellow]![/] no audio files under {source_dir}/"
+            f"{{music,podcasts,audiobooks}}"
         )
         return 0
     n_music = sum(1 for sf in files if sf.kind == gpod_facade.Kind.MUSIC)
     n_pod = sum(1 for sf in files if sf.kind == gpod_facade.Kind.PODCAST)
-    log.print(f"found {n_music} music + {n_pod} podcast file(s) under {source_dir}")
+    n_book = sum(1 for sf in files if sf.kind == gpod_facade.Kind.AUDIOBOOK)
+    log.print(
+        f"found {n_music} music + {n_pod} podcast + {n_book} audiobook "
+        f"file(s) under {source_dir}"
+    )
 
     plans, scan_failures = _scan(files, log)
     if not plans:

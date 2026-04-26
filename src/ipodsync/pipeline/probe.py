@@ -26,6 +26,7 @@ class ProbeResult:
     sample_rate: int | None
     channels: int | None
     bitrate_kbps: int | None
+    chapter_count: int         # 0 when the container has no chapter markers
 
 
 def probe(path: Path) -> ProbeResult:
@@ -36,6 +37,7 @@ def probe(path: Path) -> ProbeResult:
         "-select_streams", "a:0",
         "-show_streams",
         "-show_format",
+        "-show_chapters",
         str(path),
     ]
     try:
@@ -61,6 +63,8 @@ def probe(path: Path) -> ProbeResult:
     except (TypeError, ValueError):
         bitrate_kbps = None
 
+    chapters = data.get("chapters") or []
+
     return ProbeResult(
         codec_name=str(s.get("codec_name") or ""),
         container=str(fmt.get("format_name") or ""),
@@ -68,4 +72,5 @@ def probe(path: Path) -> ProbeResult:
         sample_rate=int(s["sample_rate"]) if s.get("sample_rate") else None,
         channels=int(s["channels"]) if s.get("channels") else None,
         bitrate_kbps=bitrate_kbps,
+        chapter_count=len(chapters),
     )
