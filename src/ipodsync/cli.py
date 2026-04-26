@@ -162,9 +162,15 @@ def sync(
 
 
 @app.command()
-def doctor() -> None:
-    """Check host (and device, when mounted) for common setup problems."""
-    raise typer.Exit(code=doctor_mod.run())
+def doctor(
+    device: bool = typer.Option(
+        False,
+        "--device",
+        help="Also run on-device checks (requires the iPod to be mounted).",
+    ),
+) -> None:
+    """Check host (and, with --device, the mounted iPod) for setup problems."""
+    raise typer.Exit(code=doctor_mod.run(device=device))
 
 
 @app.command()
