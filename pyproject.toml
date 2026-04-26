@@ -18,14 +18,20 @@ dependencies = [
     # python-gpod is built from source via scripts/bootstrap.sh; not on PyPI.
 ]
 
-[project.optional-dependencies]
+[project.scripts]
+ipodsync = "ipodsync.cli:app"
+
+[dependency-groups]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
 
-[project.scripts]
-ipodsync = "ipodsync.cli:app"
+[tool.uv]
+# python-gpod and the native libgpod.dylib are built from source by
+# scripts/bootstrap.sh and dropped into .venv directly. They are not on
+# PyPI and must not be pruned by uv on subsequent syncs.
+package = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ipodsync"]

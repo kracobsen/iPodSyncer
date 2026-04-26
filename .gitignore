@@ -12,6 +12,7 @@ build/
 .idea/
 .vscode/
 *.swp
+.env
 
 # vendored source trees (cloned by scripts/bootstrap.sh)
 vendor/

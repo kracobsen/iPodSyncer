@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Phase 0 bootstrap: build gerion0/libgpod + python-gpod bindings on macOS arm64.
 #
-# Installs native deps via Homebrew, clones libgpod into vendor/, builds with
-# meson, and installs everything (native libs + python bindings) into a project
-# venv at $REPO_ROOT/.venv — brew's system Python is never modified.
+# Installs native deps via Homebrew, creates a uv-managed venv at $REPO_ROOT/.venv
+# (using brew's Python so the meson-built bindings link against the same ABI),
+# syncs PyPI deps via `uv sync`, then clones libgpod into vendor/, builds with
+# meson, and installs the native lib + python bindings into the same venv.
 #
-# Idempotent: re-running updates the clone and rebuilds.
+# Idempotent: re-running updates the clone and rebuilds. `--inexact` on
+# `uv sync` preserves the externally-installed gpod bindings on subsequent
+# syncs.
 #
-# MacPorts alternative: see README.md. This script targets Homebrew.
+# Requires: Homebrew, uv (https://docs.astral.sh/uv/).
 
 set -euo pipefail
 
@@ -23,6 +26,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [[ "$(uname -s)" == "Darwin" ]] || die "macOS only"
 [[ "$(uname -m)" == "arm64" ]] || log "warning: not arm64 ($(uname -m)); proceeding anyway"
 command -v brew >/dev/null 2>&1 || die "Homebrew not found; install from https://brew.sh/"
+command -v uv   >/dev/null 2>&1 || die "uv not found; install via 'brew install uv' or see https://docs.astral.sh/uv/"
 
 BREW_PREFIX="$(brew --prefix)"
 BREW_PY="$BREW_PREFIX/bin/python3"
@@ -43,13 +47,14 @@ brew install \
   glib libplist sqlite gdk-pixbuf libxml2 libusb \
   pygobject3 ffmpeg
 
-log "Creating project venv at $VENV_DIR"
+log "Creating uv-managed venv at $VENV_DIR (python=$BREW_PY)"
 if [[ ! -d "$VENV_DIR" ]]; then
-  "$BREW_PY" -m venv "$VENV_DIR"
+  uv venv --python "$BREW_PY" "$VENV_DIR"
 fi
 VENV_PY="$VENV_DIR/bin/python"
-"$VENV_PY" -m pip install --quiet --upgrade pip
-"$VENV_PY" -m pip install --quiet mutagen
+
+log "Syncing PyPI deps via uv (--inexact preserves the gpod bindings on re-runs)"
+(cd "$REPO_ROOT" && uv sync --inexact)
 
 log "Cloning/updating libgpod (gerion0 fork) into $LIBGPOD_DIR"
 mkdir -p "$VENDOR_DIR"
@@ -146,4 +151,4 @@ else:
     raise SystemExit('BUG: Database(nonexistent) did not raise')
 PY
 
-log "Done. Activate the venv with: source $VENV_DIR/bin/activate"
+log "Done. Drive the CLI via: uv run ipodsync doctor   (or: source $VENV_DIR/bin/activate)"
