@@ -1,17 +1,15 @@
-"""Typer entrypoint for the `ipodsync` CLI.
-
-Phase 1: every top-level command is a stub that prints "not implemented" and
-exits 0. Subsequent phases fill these in.
-"""
+"""Typer entrypoint for the `ipodsync` CLI."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import typer
 
 from ipodsync import __version__
 from ipodsync import add as add_mod
+from ipodsync import config as config_mod
 from ipodsync import doctor as doctor_mod
 from ipodsync import ls as ls_mod
 from ipodsync import restore as restore_mod
@@ -33,6 +31,13 @@ playlist_app = typer.Typer(
 )
 app.add_typer(playlist_app)
 
+config_app = typer.Typer(
+    name="config",
+    help="Manage ~/.config/ipodsync/config.toml.",
+    no_args_is_help=True,
+)
+app.add_typer(config_app)
+
 
 @app.callback()
 def _root(
@@ -43,7 +48,13 @@ def _root(
         help="Refuse to transcode: fail instead of re-encoding non-native codecs.",
     ),
 ) -> None:
-    ctx.obj = {"strict": strict}
+    cfg = config_mod.get()
+    logging.basicConfig(
+        level=getattr(logging, cfg.log_level, logging.INFO),
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    # Flag wins over config; flag absent → fall back to config.strict.
+    ctx.obj = {"strict": strict or cfg.strict, "config": cfg}
 
 
 def _stub(cmd: str) -> None:
@@ -137,13 +148,12 @@ def rm(
 @app.command()
 def sync(
     ctx: typer.Context,
-    source: Path = typer.Argument(  # noqa: B008
-        ...,
-        exists=True,
+    source: Path | None = typer.Argument(  # noqa: B008
+        None,
         file_okay=False,
         dir_okay=True,
         readable=True,
-        help="Source directory; music scanned under <src>/music/**",
+        help="Source directory; falls back to config.source_dir.",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the plan without touching the device's DB."
@@ -154,10 +164,25 @@ def sync(
         help="Also remove on-device tracks that are no longer in the source tree.",
     ),
 ) -> None:
-    """Mirror ``<src>/music/**`` to the iPod (music-only for now; idempotent)."""
-    strict = bool((ctx.obj or {}).get("strict", False))
+    """Mirror ``<src>/{music,podcasts,audiobooks}/**`` to the iPod (idempotent)."""
+    obj = ctx.obj or {}
+    strict = bool(obj.get("strict", False))
+    cfg: config_mod.Config = obj.get("config") or config_mod.get()
+
+    chosen = source or cfg.source_dir
+    if chosen is None:
+        typer.echo(
+            "ipodsync sync: no source given and no source_dir set in "
+            f"{config_mod.CONFIG_PATH}. Pass a path or run `ipodsync config init`.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if not chosen.is_dir():
+        typer.echo(f"ipodsync sync: {chosen} is not a directory", err=True)
+        raise typer.Exit(code=2)
+
     raise typer.Exit(
-        code=sync_mod.run(source, strict=strict, dry_run=dry_run, prune=prune)
+        code=sync_mod.run(chosen, strict=strict, dry_run=dry_run, prune=prune)
     )
 
 
@@ -198,6 +223,36 @@ def restore(
     raise typer.Exit(
         code=restore_mod.run_restore(selector=snapshot, assume_yes=yes)
     )
+
+
+@config_app.command("init")
+def config_init(
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Overwrite an existing config file."
+    ),
+) -> None:
+    """Write a commented example config to ~/.config/ipodsync/config.toml."""
+    written = config_mod.init(force=force)
+    if written:
+        typer.echo(f"wrote {config_mod.CONFIG_PATH}")
+        raise typer.Exit(code=0)
+    typer.echo(
+        f"{config_mod.CONFIG_PATH} already exists — pass --force to overwrite.",
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+@config_app.command("show")
+def config_show() -> None:
+    """Print the resolved config (file values + defaults)."""
+    cfg = config_mod.load()
+    typer.echo(f"path:               {config_mod.CONFIG_PATH}")
+    typer.echo(f"exists:             {config_mod.CONFIG_PATH.is_file()}")
+    typer.echo(f"source_dir:         {cfg.source_dir or '(unset)'}")
+    typer.echo(f"strict:             {cfg.strict}")
+    typer.echo(f"log_level:          {cfg.log_level}")
+    typer.echo(f"snapshot_retention: {cfg.snapshot_retention}")
 
 
 @playlist_app.command("create")

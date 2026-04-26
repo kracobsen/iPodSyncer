@@ -155,6 +155,46 @@ def _check_fda() -> CheckResult:
     return CheckResult("Full Disk Access", "OK", f"readable: ~/Library/{existing[0].name}")
 
 
+def _check_uv() -> CheckResult:
+    path = shutil.which("uv")
+    if not path:
+        return CheckResult(
+            "uv",
+            "WARN",
+            "not on PATH — required by scripts/bootstrap.sh",
+            fix="install uv: `brew install uv` (https://docs.astral.sh/uv/)",
+        )
+    try:
+        out = subprocess.run(
+            ["uv", "--version"], capture_output=True, text=True, timeout=2, check=False
+        )
+        ver = (out.stdout or out.stderr).splitlines()[0] if (out.stdout or out.stderr) else ""
+    except (OSError, subprocess.TimeoutExpired):
+        ver = ""
+    return CheckResult("uv", "OK", ver or f"found at {path}")
+
+
+def _check_config() -> CheckResult:
+    from ipodsync import config as cfg_mod
+
+    if not cfg_mod.CONFIG_PATH.is_file():
+        return CheckResult(
+            "config",
+            "OK",
+            f"using defaults (no file at {cfg_mod.CONFIG_PATH})",
+        )
+    try:
+        cfg_mod.load()
+    except cfg_mod.ConfigError as e:
+        return CheckResult(
+            "config",
+            "FAIL",
+            str(e),
+            fix=f"fix or remove {cfg_mod.CONFIG_PATH}",
+        )
+    return CheckResult("config", "OK", str(cfg_mod.CONFIG_PATH))
+
+
 def _check_pkg_manager() -> CheckResult:
     found: list[str] = []
     if shutil.which("brew"):
@@ -183,6 +223,8 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     _check_libgpod,
     _check_fda,
     _check_pkg_manager,
+    _check_uv,
+    _check_config,
 )
 
 

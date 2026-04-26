@@ -59,12 +59,18 @@ def _atomic_copy(src: Path, dst: Path) -> None:
     tmp.replace(dst)
 
 
-def create(mount_point: Path, guid: str, *, keep: int = DEFAULT_KEEP) -> Snapshot:
+def create(mount_point: Path, guid: str, *, keep: int | None = None) -> Snapshot:
     """Copy present DB files into a fresh timestamped snapshot dir.
 
     Raises SnapshotError if no DB files exist under the mount (e.g. the iPod
-    was never initialized by iTunes).
+    was never initialized by iTunes). When ``keep`` is None, retention is
+    pulled from the user config (default ``DEFAULT_KEEP``).
     """
+    if keep is None:
+        # Imported lazily to keep the device subpackage independent of CLI config.
+        from ipodsync.config import get as _get_config
+
+        keep = _get_config().snapshot_retention
     ts = _now_ts()
     guid_dir = _guid_dir(guid)
     guid_dir.mkdir(parents=True, exist_ok=True)
