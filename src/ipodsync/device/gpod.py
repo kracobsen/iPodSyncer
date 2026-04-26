@@ -428,6 +428,97 @@ def ensure_podcast_playlist(db: Any) -> Any:
     return pl
 
 
+def find_user_playlist_struct(db: Any, name: str) -> Any | None:
+    """Return the raw ``Itdb_Playlist`` for ``name``, or None.
+
+    Refuses to surface MPL or the podcasts-flagged playlist — those are
+    structural and must never be touched by user-playlist code paths.
+    """
+    gpod = _require_gpod()
+    pl = gpod.itdb_playlist_by_name(db._itdb, name.encode("utf-8"))
+    if pl is None:
+        return None
+    if (
+        gpod.itdb_playlist_is_mpl(pl) == 1
+        or gpod.itdb_playlist_is_podcasts(pl) == 1
+    ):
+        return None
+    return pl
+
+
+def create_user_playlist_struct(db: Any, name: str) -> Any:
+    """Create + append a non-smart playlist; return the raw ``Itdb_Playlist``."""
+    gpod = _require_gpod()
+    pl = gpod.itdb_playlist_new(name.encode("utf-8"), 0)
+    gpod.itdb_playlist_add(db._itdb, pl, -1)
+    return pl
+
+
+def add_track_struct_to_playlist(pl_struct: Any, track_struct: Any) -> None:
+    """Append a raw ``Itdb_Track`` to a raw ``Itdb_Playlist``."""
+    gpod = _require_gpod()
+    gpod.itdb_playlist_add_track(pl_struct, track_struct, -1)
+
+
+def delete_user_playlist(pl_struct: Any) -> None:
+    """Detach + free a user playlist. Tracks are preserved.
+
+    Refuses to operate on MPL or the podcasts-flagged playlist — call sites
+    should already have filtered those out via ``find_user_playlist_struct``.
+    """
+    gpod = _require_gpod()
+    if (
+        gpod.itdb_playlist_is_mpl(pl_struct) == 1
+        or gpod.itdb_playlist_is_podcasts(pl_struct) == 1
+    ):
+        raise DbWriteError(
+            "refusing to delete a special playlist (MPL or podcasts)"
+        )
+    gpod.itdb_playlist_remove(pl_struct)
+
+
+def user_playlist_memberships(db: Any) -> dict[str, list[str]]:
+    """Map non-special playlist name → ordered list of member sha1s.
+
+    Skips MPL + the podcasts-flagged playlist. Tracks without a stashed sha1
+    (e.g. seeded by iTunes long ago) appear as empty strings so order is
+    preserved for comparison purposes.
+    """
+    gpod = _require_gpod()
+    out: dict[str, list[str]] = {}
+    pls = db.Playlists
+    for i in range(len(pls)):
+        pl = pls[i]
+        struct = pl._pl
+        if (
+            gpod.itdb_playlist_is_mpl(struct) == 1
+            or gpod.itdb_playlist_is_podcasts(struct) == 1
+        ):
+            continue
+        name = struct.name.decode("utf-8") if isinstance(struct.name, bytes) else str(struct.name)
+        members: list[str] = []
+        for j in range(len(pl)):
+            members.append(_track_sha1(pl[j]) or "")
+        out[name] = members
+    return out
+
+
+def track_structs_by_sha1(db: Any) -> dict[str, Any]:
+    """Map source-content sha1 → raw ``Itdb_Track`` for every track in db.
+
+    Uses the same userdata key (``sha1_hash``) that ``add_music_track``
+    stashes during sync, so this resolves both freshly-added tracks and
+    survivors from prior syncs.
+    """
+    out: dict[str, Any] = {}
+    for i in range(len(db)):
+        wrapper = db[i]
+        sha = _track_sha1(wrapper)
+        if sha:
+            out[sha] = wrapper._track
+    return out
+
+
 def attach_artwork(track: Any, image_path: Path) -> bool:
     """Queue cover art on `track`; libgpod renders + writes F1_1.ithmb at commit.
 

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.progress import (
@@ -45,6 +46,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from ipodsync import playlist as playlist_mod
 from ipodsync.add import AddError, read_tags
 from ipodsync.device import gpod as gpod_facade
 from ipodsync.device import mount as mount_mod
@@ -278,7 +280,8 @@ def run(
         return 2
 
     files = _walk_source(source_dir)
-    if not files:
+    m3u_paths = playlist_mod.walk_m3us(source_dir)
+    if not files and not m3u_paths and not prune:
         log.print(
             f"[yellow]![/] no audio files under {source_dir}/"
             f"{{music,podcasts,audiobooks}}"
@@ -289,13 +292,21 @@ def run(
     n_book = sum(1 for sf in files if sf.kind == gpod_facade.Kind.AUDIOBOOK)
     log.print(
         f"found {n_music} music + {n_pod} podcast + {n_book} audiobook "
-        f"file(s) under {source_dir}"
+        f"file(s) + {len(m3u_paths)} m3u under {source_dir}"
     )
 
-    plans, scan_failures = _scan(files, log)
-    if not plans:
+    m3us = [playlist_mod.parse_m3u(p, source_dir) for p in m3u_paths]
+    for m in m3us:
+        for w in m.warnings:
+            log.print(f"[yellow]  · playlist {m.name}: {w}[/]")
+
+    plans, scan_failures = _scan(files, log) if files else ([], [])
+    if files and not plans:
         log.print("[red]✗[/] every file failed to scan")
         return 1
+
+    # Source-path → sha1 lookup, used to resolve M3U entries to on-device tracks.
+    path_to_sha1 = {p.source.resolve(): p.sha1 for p in plans}
 
     try:
         device = find_ipod()
@@ -327,6 +338,7 @@ def run(
         try:
             with gpod_facade.open_readonly(mnt) as db:
                 existing = gpod_facade.collect_sha1_hashes(db)
+                existing_pl_members = gpod_facade.user_playlist_memberships(db)
         except gpod_facade.GpodImportError as e:
             log.print(f"[red]✗[/] {e}")
             return 1
@@ -367,7 +379,27 @@ def run(
             log.print("[yellow]--dry-run: exiting without writes[/]")
             return 0
 
-        if not to_add and not to_prune_n:
+        ledger_before = playlist_mod.load_ledger(guid)
+        # Project after-sync sha1 set so M3U entries pointing at to-be-added
+        # tracks count as "resolvable" during the diff.
+        post_sync_sha1s = existing | {p.sha1 for p in to_add}
+        desired_pl_members: dict[str, list[str]] = {}
+        for m in m3us:
+            ordered: list[str] = []
+            for entry in m.entries:
+                sha = path_to_sha1.get(entry)
+                if sha and sha in post_sync_sha1s:
+                    ordered.append(sha)
+            desired_pl_members[m.name] = ordered
+
+        m3u_will_change = (
+            any(
+                desired_pl_members[name] != existing_pl_members.get(name, [])
+                for name in desired_pl_members
+            )
+            or (prune and bool(ledger_before - set(desired_pl_members.keys())))
+        )
+        if not to_add and not to_prune_n and not m3u_will_change:
             log.print("[green]✓[/] already in sync")
             return 5 if scan_failures else 0
 
@@ -388,6 +420,9 @@ def run(
 
         added = 0
         pruned = 0
+        playlist_results: list[tuple[str, int, int]] = []  # (name, added, missing)
+        playlists_pruned: list[str] = []
+        expected_pl_names: set[str] = {m.name for m in m3us}
         try:
             with gpod_facade.open_readwrite(mnt) as db:
                 if prune and to_prune_n:
@@ -426,6 +461,40 @@ def run(
                                 gpod_facade.attach_artwork(track, it.art_path)
                             added += 1
                             prog.advance(task)
+
+                # M3U playlists must be (re)built AFTER track additions so the
+                # sha1→track index sees freshly-added rows. Replace-in-place:
+                # delete any existing playlist with the same name, recreate
+                # empty, fill in M3U order. Then prune owned playlists whose
+                # M3U disappeared (only when --prune).
+                if m3us or (prune and ledger_before):
+                    sha1_to_struct = gpod_facade.track_structs_by_sha1(db)
+                    for m in m3us:
+                        ordered: list[Any] = []
+                        missing = 0
+                        for entry in m.entries:
+                            sha = path_to_sha1.get(entry)
+                            tstruct = sha1_to_struct.get(sha) if sha else None
+                            if tstruct is None:
+                                missing += 1
+                                continue
+                            ordered.append(tstruct)
+                        prior_pl = gpod_facade.find_user_playlist_struct(db, m.name)
+                        if prior_pl is not None:
+                            gpod_facade.delete_user_playlist(prior_pl)
+                        new_pl = gpod_facade.create_user_playlist_struct(db, m.name)
+                        for ts in ordered:
+                            gpod_facade.add_track_struct_to_playlist(new_pl, ts)
+                        playlist_results.append((m.name, len(ordered), missing))
+
+                    if prune:
+                        for stale in sorted(ledger_before - expected_pl_names):
+                            stale_pl = gpod_facade.find_user_playlist_struct(
+                                db, stale
+                            )
+                            if stale_pl is not None:
+                                gpod_facade.delete_user_playlist(stale_pl)
+                                playlists_pruned.append(stale)
         except gpod_facade.DbWriteError as e:
             log.print(f"[red]✗[/] write failed: {e}")
             log.print(
@@ -436,6 +505,20 @@ def run(
         orphans = 0
         if prune:
             orphans = _sweep_orphans(mnt, log)
+
+        # Ledger update is post-commit on purpose: if the write failed above
+        # we returned early, so we never claim ownership of a playlist that
+        # was rolled back.
+        if m3us or (prune and ledger_before):
+            new_owned = (
+                expected_pl_names if prune else (ledger_before | expected_pl_names)
+            )
+            playlist_mod.save_ledger(guid, new_owned)
+            for name, n_added, n_missing in playlist_results:
+                tail = f" ({n_missing} missing)" if n_missing else ""
+                log.print(f"[green]✓[/] playlist {name}: {n_added} track(s){tail}")
+            for name in playlists_pruned:
+                log.print(f"[dim]  · pruned playlist {name}[/]")
 
         total_failed = len(scan_failures) + len(prep_failures)
         msg_parts = [f"added {added}"]
