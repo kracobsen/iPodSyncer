@@ -7,6 +7,7 @@ an iPod that's already mounted (we don't auto-mount during a diagnostic).
 
 from __future__ import annotations
 
+import json
 import platform
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ from rich.table import Table
 from ipodsync.device import gpod as gpod_facade
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, IpodDevice, find_ipod
+from ipodsync.podcasts import ledger as pod_ledger
 
 Status = Literal["OK", "WARN", "FAIL"]
 
@@ -323,6 +325,33 @@ def _check_db_roundtrip(mp: Path) -> CheckResult:
     return CheckResult("iTunesDB", "OK", f"parsed; {n} track(s)")
 
 
+def _check_pod_ledger(mp: Path) -> CheckResult:
+    guid = sysinfo.read_firewire_guid(mp)
+    if not guid:
+        return CheckResult(
+            "consumed podcasts",
+            "WARN",
+            "skipped — no FirewireGUID",
+        )
+    path = pod_ledger.path_for(guid)
+    if not path.is_file():
+        return CheckResult("consumed podcasts", "OK", f"0 entries · {path}")
+    try:
+        ledger = pod_ledger.load(guid)
+    except json.JSONDecodeError as e:
+        return CheckResult(
+            "consumed podcasts",
+            "FAIL",
+            f"corrupt ledger at {path}: {e}",
+            fix=f"inspect with `ipodsync podcasts list` or remove {path}",
+        )
+    return CheckResult(
+        "consumed podcasts",
+        "OK",
+        f"{len(ledger.entries)} entry(ies) · {path}",
+    )
+
+
 def _check_track_counts(mp: Path) -> CheckResult:
     counts = {k: 0 for k in gpod_facade.Kind}
     try:
@@ -382,6 +411,7 @@ def _device_checks() -> list[CheckResult]:
     out.append(_check_dirs(mp))
     out.append(_check_db_roundtrip(mp))
     out.append(_check_track_counts(mp))
+    out.append(_check_pod_ledger(mp))
     return out
 
 

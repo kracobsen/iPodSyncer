@@ -57,12 +57,13 @@ Non-native codecs (FLAC/Opus/Vorbis/…) auto-transcode to AAC ~256k VBR. Origin
 
 | Command | What it does |
 | --- | --- |
-| `doctor [--device]` | Host checks: macOS, ffmpeg, libgpod, FDA, libfdk_aac. With `--device`: GUID, free space, DB roundtrip, track counts. |
+| `doctor [--device]` | Host checks: macOS, ffmpeg, libgpod, FDA, libfdk_aac. With `--device`: GUID, free space, DB roundtrip, track counts, [consumed-podcast ledger](#podcasts-auto-reap). |
 | `mount` / `eject` | Manual mount/unmount. Other commands auto-mount. |
-| `ls [--kind music\|podcast\|book] [--json]` | Read-only listing. |
+| `ls [--kind music\|podcast\|book] [--json]` | Read-only listing. Podcasts include a `played` count. |
 | `add <file>` | Add one file. Probes, transcodes if needed, dedupes by sha1, extracts cover art. |
 | `rm [IDS…] [--filter KEY=VALUE] [--kind K] [--dry-run] [-y]` | Delete tracks. `--filter` keys: `title`/`artist`/`album`/`genre` (exact, case-insensitive). Refuses without a selector. |
-| `sync [<src>] [--dry-run] [--prune]` | Mirror source tree to device. Idempotent. `<src>` falls back to `config.source_dir`. `--prune` removes on-device tracks not in the source, orphan F## files, and ipodsync-owned playlists whose M3U disappeared. |
+| `sync [<src>] [--dry-run] [--prune] [--keep-played]` | Mirror source tree to device. Idempotent. `<src>` falls back to `config.source_dir`. `--prune` removes on-device tracks not in the source, orphan F## files, and ipodsync-owned playlists whose M3U disappeared. `--keep-played` skips [auto-reap](#podcasts-auto-reap) for one run. |
+| `podcasts list` / `podcasts forget <pattern>\|--all` | Inspect or clear the [consumed-podcast ledger](#podcasts-auto-reap). |
 | `config init [-f]` / `config show` | Write or print the config file. |
 | `version` | Print package version. |
 
@@ -77,11 +78,33 @@ All keys optional. `~/.config/ipodsync/config.toml`:
 | `source_dir` | unset | Default `<src>` for `sync`. |
 | `strict` | `false` | Same as `--strict`. |
 | `log_level` | `"INFO"` | `DEBUG` / `INFO` / `WARNING` / `ERROR`. |
+| `[podcasts] auto_reap_played` | `true` | Remove fully-played podcasts on the next sync. See [Podcasts auto-reap](#podcasts-auto-reap). |
 
 ```sh
 uv run ipodsync config init      # writes a commented example
 uv run ipodsync config show      # prints resolved values
 ```
+
+## Podcasts auto-reap
+
+When the iPod marks a podcast episode fully played (`playcount >= 1`), the next `sync` removes it from the device and remembers not to re-add it. Only episodes ipodsync put on the device are eligible — iTunes-seeded tracks are never reaped.
+
+The consumed-podcast ledger lives at `~/Library/Application Support/ipodsync/<FirewireGUID>/podcasts.json` and persists across syncs. `ipodsync doctor --device` reports its path and entry count.
+
+**Opt out** — globally via `[podcasts] auto_reap_played = false` in `~/.config/ipodsync/config.toml`, or per-run via `sync --keep-played` (the ledger still suppresses re-adds).
+
+**Re-listen** — `ipodsync podcasts forget <show>` (or `<show>/<episode>`) drops matching entries; the next sync re-adds them from source. `ipodsync podcasts forget --all` clears the ledger. `ipodsync podcasts list` prints what's currently remembered.
+
+```sh
+uv run ipodsync podcasts list
+uv run ipodsync podcasts forget "Hard Fork"
+uv run ipodsync sync ~/Music/ipod                 # re-adds the dropped episodes
+```
+
+**Caveats:**
+
+- **Safe-eject before unplug.** Hard-yanking the iPod can lose pending firmware writes, including the playcount bump that drives reap. Use `ipodsync eject`.
+- **Restoring source files from backup.** The ledger prunes entries whose `source_path` is gone on disk, so restoring a previously-deleted source file from backup will cause its episode to be re-added on the next sync even if you finished it on device. `podcasts list` before restoring if you want to keep the entry.
 
 ## Safety
 
@@ -93,4 +116,4 @@ Refuses to operate on a device with `.rockbox/`. Recovery relies on your local s
 - **`import gpod` fails.** Re-run `./scripts/bootstrap.sh`. Verify with `uv run python -c "import gpod; print(gpod.version)"`.
 - **iPod not detected.** Check `diskutil list` (it shows up even when Finder ignores it). `ipodsync doctor --device` exercises the full path.
 
-See [FEASIBILITY.md](./FEASIBILITY.md) for the spec, [plans/ipodsyncer-v0.1.md](./plans/ipodsyncer-v0.1.md) for phase history, and [FIX_PROPOSAL.md](./FIX_PROPOSAL.md) for the current code-sweep backlog.
+See [FEASIBILITY.md](./FEASIBILITY.md) for the spec and [plans/ipodsyncer-v0.1.md](./plans/ipodsyncer-v0.1.md) / [plans/podcasts-auto-reap.md](./plans/podcasts-auto-reap.md) for phase history.
