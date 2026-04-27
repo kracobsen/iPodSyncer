@@ -26,6 +26,12 @@ EXAMPLE = """\
 
 # Stdlib logging level applied at CLI startup. DEBUG | INFO | WARNING | ERROR.
 # log_level = "INFO"
+
+# [podcasts]
+# # Auto-reap podcast episodes once the iPod marks them fully played
+# # (playcount >= 1). The consumed-ledger remembers reaped episodes so a
+# # later sync doesn't re-add them. Per-sync override: `sync --keep-played`.
+# auto_reap_played = true
 """
 
 
@@ -34,6 +40,7 @@ class Config:
     source_dir: Path | None = None
     strict: bool = False
     log_level: str = "INFO"
+    auto_reap_played: bool = True
 
 
 class ConfigError(RuntimeError):
@@ -50,10 +57,12 @@ def load(path: Path = CONFIG_PATH) -> Config:
         raise ConfigError(f"{path}: {e}") from e
 
     src = raw.get("source_dir")
+    podcasts = raw.get("podcasts") or {}
     return Config(
         source_dir=Path(str(src)).expanduser() if src else None,
         strict=bool(raw.get("strict", False)),
         log_level=str(raw.get("log_level", "INFO")).upper(),
+        auto_reap_played=bool(podcasts.get("auto_reap_played", True)),
     )
 
 

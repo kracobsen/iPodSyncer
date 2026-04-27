@@ -170,6 +170,14 @@ def sync(
         "--prune",
         help="Also remove on-device tracks that are no longer in the source tree.",
     ),
+    keep_played: bool = typer.Option(
+        False,
+        "--keep-played",
+        help=(
+            "Skip auto-reap of fully-played podcasts for this run. "
+            "The consumed-podcast ledger still suppresses re-adds."
+        ),
+    ),
 ) -> None:
     """Mirror ``<src>/{music,podcasts,audiobooks}/**`` to the iPod (idempotent)."""
     obj = ctx.obj or {}
@@ -189,7 +197,14 @@ def sync(
         raise typer.Exit(code=2)
 
     raise typer.Exit(
-        code=sync_mod.run(chosen, strict=strict, dry_run=dry_run, prune=prune)
+        code=sync_mod.run(
+            chosen,
+            strict=strict,
+            dry_run=dry_run,
+            prune=prune,
+            keep_played=keep_played,
+            auto_reap_played=cfg.auto_reap_played,
+        )
     )
 
 
@@ -238,6 +253,7 @@ def config_show() -> None:
     typer.echo(f"source_dir:         {cfg.source_dir or '(unset)'}")
     typer.echo(f"strict:             {cfg.strict}")
     typer.echo(f"log_level:          {cfg.log_level}")
+    typer.echo(f"auto_reap_played:   {cfg.auto_reap_played}")
 
 
 @podcasts_app.command("list")

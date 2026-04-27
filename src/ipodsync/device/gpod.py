@@ -217,15 +217,18 @@ class OurPodcastPlay:
     sha1: str
     playcount: int
     title: str
+    show: str          # track.album (we set this to the show folder name on add)
+    source_path: str   # userdata['filename'] from the original add — may be ""
 
 
 def our_podcast_playcounts(db: Any) -> dict[str, OurPodcastPlay]:
-    """Map sha1 → playcount/title for podcast tracks we added.
+    """Map sha1 → playcount/title/show/source_path for podcast tracks we added.
 
     Filters to ``mediatype=PODCAST`` AND a ``sha1_hash`` userdata stamp,
     so iTunes-seeded episodes never appear here. The reap path (phase 19)
     feeds off this — surfacing a foreign track would let us delete files
-    we don't own.
+    we don't own. ``show`` and ``source_path`` are returned so the reap
+    pipeline can build a ledger entry without re-walking userdata.
     """
     out: dict[str, OurPodcastPlay] = {}
     for i in range(len(db)):
@@ -233,13 +236,21 @@ def our_podcast_playcounts(db: Any) -> dict[str, OurPodcastPlay]:
         track = wrapper._track
         if kind_from_mediatype(getattr(track, "mediatype", 0)) != Kind.PODCAST:
             continue
-        sha1 = _track_sha1(wrapper)
+        try:
+            ud = wrapper["userdata"]
+        except KeyError:
+            continue
+        if not isinstance(ud, dict):
+            continue
+        sha1 = ud.get("sha1_hash")
         if not sha1:
             continue
-        out[sha1] = OurPodcastPlay(
-            sha1=sha1,
+        out[str(sha1)] = OurPodcastPlay(
+            sha1=str(sha1),
             playcount=_i(getattr(track, "playcount", 0)),
             title=_s(getattr(track, "title", None)),
+            show=_s(getattr(track, "album", None)),
+            source_path=str(ud.get("filename", "")),
         )
     return out
 

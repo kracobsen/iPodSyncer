@@ -52,6 +52,7 @@ from ipodsync.device import mount as mount_mod
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
 from ipodsync.pipeline import artwork, probe, transcode
+from ipodsync.podcasts import ledger as pod_ledger
 
 _MUSIC_EXT = frozenset(
     {".mp3", ".m4a", ".flac", ".opus", ".ogg", ".wav", ".wave", ".aif", ".aiff"}
@@ -269,6 +270,8 @@ def run(
     strict: bool = False,
     dry_run: bool = False,
     prune: bool = False,
+    keep_played: bool = False,
+    auto_reap_played: bool = True,
     console: Console | None = None,
 ) -> int:
     log = console or Console(stderr=True)
@@ -337,6 +340,7 @@ def run(
             with gpod_facade.open_readonly(mnt) as db:
                 existing = gpod_facade.collect_sha1_hashes(db)
                 existing_pl_members = gpod_facade.user_playlist_memberships(db)
+                played_map = gpod_facade.our_podcast_playcounts(db)
         except gpod_facade.GpodImportError as e:
             log.print(f"[red]✗[/] {e}")
             return 1
@@ -344,8 +348,27 @@ def run(
             log.print(f"[red]✗[/] could not read iTunesDB: {e}")
             return 1
 
+        # Pod ledger is per-GUID, so we load it after reading the FireWireGUID.
+        # Prune entries whose source path is gone — that's how a user re-adds
+        # a previously-reaped episode (delete + recreate the source file).
+        pod_state = pod_ledger.load(guid)
+        ledger_pruned = pod_state.prune_missing()
+        ledger_sha1s = set(pod_state.entries.keys())
+
+        # Played-and-ours podcasts. Reap is enabled iff config + per-run flag agree.
+        played_eligible = {
+            sha1 for sha1, p in played_map.items() if p.playcount >= 1
+        }
+        reap_enabled = auto_reap_played and not keep_played
+        to_reap_sha1s: set[str] = played_eligible if reap_enabled else set()
+
         source_sha1s = {p.sha1 for p in plans}
-        to_add = [p for p in plans if p.sha1 not in existing]
+        to_add = [
+            p for p in plans
+            if p.sha1 not in existing
+            and p.sha1 not in ledger_sha1s
+            and p.sha1 not in to_reap_sha1s
+        ]
         dedup_skip = len(plans) - len(to_add)
         transcode_n = sum(1 for p in to_add if p.needs_transcode)
         to_prune_n = len(existing - source_sha1s) if prune else 0
@@ -355,13 +378,24 @@ def run(
 
         log.print(
             f"plan: add={len(to_add)} skip(dedup)={dedup_skip} "
-            f"transcode={transcode_n} prune={to_prune_n} "
-            f"scan-failed={len(scan_failures)}"
+            f"transcode={transcode_n} reap={len(to_reap_sha1s)} "
+            f"prune={to_prune_n} scan-failed={len(scan_failures)}"
         )
         if not prune and prune_blocked:
             log.print(
                 f"[dim]  · {prune_blocked} on-device track(s) not in source "
                 f"(pass --prune to remove)[/]"
+            )
+        if not reap_enabled and played_eligible:
+            why = "--keep-played" if keep_played else "auto_reap_played=false"
+            log.print(
+                f"[dim]  · {len(played_eligible)} played podcast(s) eligible "
+                f"but kept ({why})[/]"
+            )
+        if ledger_pruned:
+            log.print(
+                f"[dim]  · ledger: dropped {len(ledger_pruned)} entry(ies) "
+                f"with missing source[/]"
             )
 
         if strict and transcode_n:
@@ -374,13 +408,21 @@ def run(
             return 4
 
         if dry_run:
+            if to_reap_sha1s:
+                log.print(
+                    f"[yellow]would reap {len(to_reap_sha1s)} played podcast(s):[/]"
+                )
+                for reap_sha in sorted(to_reap_sha1s):
+                    pmeta = played_map[reap_sha]
+                    log.print(f"  · {pmeta.show}/{pmeta.title}")
             log.print("[yellow]--dry-run: exiting without writes[/]")
             return 0
 
         ledger_before = playlist_mod.load_ledger(guid)
         # Project after-sync sha1 set so M3U entries pointing at to-be-added
-        # tracks count as "resolvable" during the diff.
-        post_sync_sha1s = existing | {p.sha1 for p in to_add}
+        # tracks count as "resolvable" during the diff. Reaped tracks get
+        # subtracted because the rebuild runs after reap deletes them.
+        post_sync_sha1s = (existing - to_reap_sha1s) | {p.sha1 for p in to_add}
         desired_pl_members: dict[str, list[str]] = {}
         for m in m3us:
             ordered: list[str] = []
@@ -397,7 +439,13 @@ def run(
             )
             or (prune and bool(ledger_before - set(desired_pl_members.keys())))
         )
-        if not to_add and not to_prune_n and not m3u_will_change:
+        if (
+            not to_add
+            and not to_prune_n
+            and not m3u_will_change
+            and not to_reap_sha1s
+            and not ledger_pruned
+        ):
             log.print("[green]✓[/] already in sync")
             return 5 if scan_failures else 0
 
@@ -405,17 +453,49 @@ def run(
         prep_failures: list[tuple[Path, str]] = []
         if to_add:
             prepared, prep_failures = _prepare(to_add, strict, log)
-            if not prepared and not to_prune_n:
+            if not prepared and not to_prune_n and not to_reap_sha1s:
                 log.print("[red]✗[/] all new items failed during prepare")
                 return 1
 
+        # User playlists whose existing membership intersects to_reap_sha1s —
+        # called out in the announce so reap surprises don't read as silent
+        # M3U churn.
+        playlists_impacted = sorted(
+            name for name, members in existing_pl_members.items()
+            if any(s in to_reap_sha1s for s in members)
+        )
+
         added = 0
         pruned = 0
+        reaped_entries: list[pod_ledger.Entry] = []
         playlist_results: list[tuple[str, int, int]] = []  # (name, added, missing)
         playlists_pruned: list[str] = []
         expected_pl_names: set[str] = {m.name for m in m3us}
         try:
             with gpod_facade.open_readwrite(mnt) as db:
+                if to_reap_sha1s:
+                    with _progress("reap") as prog:
+                        task = prog.add_task("", total=len(to_reap_sha1s), current="")
+                        reap_targets = [
+                            (info, w, sha)
+                            for info, w, sha in gpod_facade.iter_track_wrappers(db)
+                            if sha and sha in to_reap_sha1s
+                        ]
+                        now = pod_ledger.now_iso_utc()
+                        for r_info, r_w, r_sha in reap_targets:
+                            prog.update(
+                                task, current=r_info.title or f"#{r_info.id}"
+                            )
+                            pmeta = played_map[r_sha]
+                            gpod_facade.remove_track(db, r_w)
+                            reaped_entries.append(pod_ledger.Entry(
+                                sha1=r_sha,
+                                show=pmeta.show,
+                                title=pmeta.title,
+                                source_path=pmeta.source_path,
+                                removed_at=now,
+                            ))
+                            prog.advance(task)
                 if prune and to_prune_n:
                     with _progress("prune") as prog:
                         task = prog.add_task("", total=to_prune_n, current="")
@@ -508,8 +588,27 @@ def run(
             for name in playlists_pruned:
                 log.print(f"[dim]  · pruned playlist {name}[/]")
 
+        # Pod ledger save is post-commit too: only claim a reap once the
+        # iTunesDB write that removed the track actually landed.
+        if reaped_entries or ledger_pruned:
+            for r_entry in reaped_entries:
+                pod_state.record(r_entry)
+            pod_ledger.save(pod_state)
+        if reaped_entries:
+            titles = [f"{e.show}/{e.title}" for e in reaped_entries]
+            head = ", ".join(titles[:3])
+            tail = f" … (+{len(titles) - 3} more)" if len(titles) > 3 else ""
+            log.print(f"[green]✓[/] reaped {len(titles)}: {head}{tail}")
+            if playlists_impacted:
+                log.print(
+                    f"[dim]  · playlists affected: "
+                    f"{', '.join(playlists_impacted)}[/]"
+                )
+
         total_failed = len(scan_failures) + len(prep_failures)
         msg_parts = [f"added {added}"]
+        if reaped_entries:
+            msg_parts.append(f"reaped {len(reaped_entries)}")
         if prune:
             msg_parts.append(f"pruned {pruned}")
             if orphans:
