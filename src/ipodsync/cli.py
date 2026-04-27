@@ -16,6 +16,7 @@ from ipodsync import restore as restore_mod
 from ipodsync import rm as rm_mod
 from ipodsync import sync as sync_mod
 from ipodsync.device import ops as device_ops
+from ipodsync.podcasts import cli as podcasts_cli
 
 app = typer.Typer(
     name="ipodsync",
@@ -37,6 +38,13 @@ config_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(config_app)
+
+podcasts_app = typer.Typer(
+    name="podcasts",
+    help="Inspect and forget the consumed-podcast ledger.",
+    no_args_is_help=True,
+)
+app.add_typer(podcasts_app)
 
 
 @app.callback()
@@ -253,6 +261,40 @@ def config_show() -> None:
     typer.echo(f"strict:             {cfg.strict}")
     typer.echo(f"log_level:          {cfg.log_level}")
     typer.echo(f"snapshot_retention: {cfg.snapshot_retention}")
+
+
+@podcasts_app.command("list")
+def podcasts_list(
+    guid: str | None = typer.Option(
+        None,
+        "--guid",
+        help="FirewireGUID of the iPod whose ledger to read. Omit to detect+mount.",
+    ),
+) -> None:
+    """Print consumed-podcast ledger entries as a table."""
+    raise typer.Exit(code=podcasts_cli.run_list(guid=guid))
+
+
+@podcasts_app.command("forget")
+def podcasts_forget(
+    pattern: str | None = typer.Argument(
+        None,
+        metavar="[PATTERN]",
+        help="Substring matched against `<show>/<episode>` (case-insensitive).",
+    ),
+    all_: bool = typer.Option(
+        False, "--all", help="Forget every entry in the ledger."
+    ),
+    guid: str | None = typer.Option(
+        None,
+        "--guid",
+        help="FirewireGUID of the iPod whose ledger to mutate. Omit to detect+mount.",
+    ),
+) -> None:
+    """Remove ledger entries so future syncs may re-add them."""
+    raise typer.Exit(
+        code=podcasts_cli.run_forget(pattern=pattern, all_=all_, guid=guid)
+    )
 
 
 @playlist_app.command("create")
