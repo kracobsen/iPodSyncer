@@ -17,7 +17,9 @@ JSON schema emitted by `--json`:
           "kind":        "music" | "podcast" | "audiobook" | "other",
           "size":        int,   # bytes
           "duration_ms": int,   # milliseconds
-          "ipod_path":   str    # colon-form on-device path, "" if unknown
+          "ipod_path":   str,   # colon-form on-device path, "" if unknown
+          "played":      int,   # iTunesDB playcount (firmware bumps on full listen)
+          "ours":        bool   # we added it (carries our sha1 stamp)
         },
         ...
       ]
@@ -45,7 +47,7 @@ from ipodsync.device.gpod import (
     GpodImportError,
     Kind,
     TrackInfo,
-    iter_tracks,
+    iter_track_wrappers,
     open_readonly,
 )
 
@@ -77,7 +79,12 @@ def _fmt_duration(ms: int) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def _emit_table(console: Console, tracks: list[TrackInfo]) -> None:
+def _emit_table(
+    console: Console,
+    tracks: list[tuple[TrackInfo, bool]],
+    *,
+    show_played: bool,
+) -> None:
     if not tracks:
         console.print("[dim]no tracks on device[/]")
         return
@@ -89,26 +96,41 @@ def _emit_table(console: Console, tracks: list[TrackInfo]) -> None:
     table.add_column("Kind")
     table.add_column("Size", justify="right")
     table.add_column("Duration", justify="right")
-    for t in tracks:
-        table.add_row(
+    if show_played:
+        table.add_column("Played", justify="right")
+    for t, ours in tracks:
+        # Mark iTunes-seeded tracks (no sha1 stamp) so phase 19 reap can't
+        # be confused into thinking it owns them.
+        title_cell = t.title or "[dim]—[/]"
+        if not ours:
+            title_cell = f"{title_cell} [yellow](foreign)[/]"
+        row = [
             str(t.id),
-            t.title or "[dim]—[/]",
+            title_cell,
             t.artist or "[dim]—[/]",
             t.album or "[dim]—[/]",
             t.kind.value,
             _fmt_size(t.size),
             _fmt_duration(t.duration_ms),
-        )
+        ]
+        if show_played:
+            row.append(str(t.played))
+        table.add_row(*row)
     console.print(table)
     console.print(f"[dim]{len(tracks)} track(s)[/]")
 
 
-def _emit_json(mount_point: Path, guid: str | None, tracks: list[TrackInfo]) -> None:
+def _emit_json(
+    mount_point: Path,
+    guid: str | None,
+    tracks: list[tuple[TrackInfo, bool]],
+) -> None:
     payload = {
         "device": {"mount_point": str(mount_point), "firewire_guid": guid},
         "count": len(tracks),
         "tracks": [
-            {**asdict(t), "kind": t.kind.value} for t in tracks
+            {**asdict(t), "kind": t.kind.value, "ours": ours}
+            for t, ours in tracks
         ],
     }
     json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
@@ -166,8 +188,9 @@ def run(
         try:
             with open_readonly(mnt) as db:
                 tracks = [
-                    t for t in iter_tracks(db)
-                    if filter_kind is None or t.kind == filter_kind
+                    (info, sha1 is not None)
+                    for info, _w, sha1 in iter_track_wrappers(db)
+                    if filter_kind is None or info.kind == filter_kind
                 ]
         except GpodImportError as e:
             log.print(f"[red]✗[/] {e}")
@@ -179,7 +202,7 @@ def run(
         if as_json:
             _emit_json(mnt, guid, tracks)
         else:
-            _emit_table(Console(), tracks)
+            _emit_table(Console(), tracks, show_played=filter_kind == Kind.PODCAST)
         return 0
     finally:
         if we_mounted:

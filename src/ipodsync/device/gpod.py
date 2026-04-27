@@ -33,6 +33,7 @@ class TrackInfo:
     size: int          # bytes
     duration_ms: int   # tracklen, ms
     ipod_path: str     # colon-form on-device path, "" if missing
+    played: int        # iTunesDB playcount; firmware bumps on full play-through
 
 
 class GpodImportError(RuntimeError):
@@ -99,6 +100,7 @@ def _track_info(track: Any) -> TrackInfo:
         size=_i(getattr(track, "size", 0)),
         duration_ms=_i(getattr(track, "tracklen", 0)),
         ipod_path=_s(getattr(track, "ipod_path", None)),
+        played=_i(getattr(track, "playcount", 0)),
     )
 
 
@@ -208,6 +210,38 @@ def iter_track_wrappers(db: Any) -> Iterator[tuple[TrackInfo, Any, str | None]]:
     for i in range(len(db)):
         wrapper = db[i]
         yield _track_info(wrapper._track), wrapper, _track_sha1(wrapper)
+
+
+@dataclass(frozen=True)
+class OurPodcastPlay:
+    sha1: str
+    playcount: int
+    title: str
+
+
+def our_podcast_playcounts(db: Any) -> dict[str, OurPodcastPlay]:
+    """Map sha1 → playcount/title for podcast tracks we added.
+
+    Filters to ``mediatype=PODCAST`` AND a ``sha1_hash`` userdata stamp,
+    so iTunes-seeded episodes never appear here. The reap path (phase 19)
+    feeds off this — surfacing a foreign track would let us delete files
+    we don't own.
+    """
+    out: dict[str, OurPodcastPlay] = {}
+    for i in range(len(db)):
+        wrapper = db[i]
+        track = wrapper._track
+        if kind_from_mediatype(getattr(track, "mediatype", 0)) != Kind.PODCAST:
+            continue
+        sha1 = _track_sha1(wrapper)
+        if not sha1:
+            continue
+        out[sha1] = OurPodcastPlay(
+            sha1=sha1,
+            playcount=_i(getattr(track, "playcount", 0)),
+            title=_s(getattr(track, "title", None)),
+        )
+    return out
 
 
 def remove_track(db: Any, track_wrapper: Any) -> None:
