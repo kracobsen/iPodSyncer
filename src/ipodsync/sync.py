@@ -7,9 +7,8 @@ Two device-touching phases bracket a lazy middle:
 3. **Plan** = scan ∖ existing. ``--dry-run`` exits here.
 4. **Prepare** only the to-add items: transcode where needed, tag read,
    artwork extract. Expensive but skipped entirely when there's nothing new.
-5. **Commit** — snapshot, then one ``open_readwrite`` block that adds every
-   track + artwork, so libgpod writes ``iTunesDB`` / ``iTunesCDB`` /
-   ``ArtworkDB`` once.
+5. **Commit** — one ``open_readwrite`` block that adds every track + artwork,
+   so libgpod writes ``iTunesDB`` / ``iTunesCDB`` / ``ArtworkDB`` once.
 
 Idempotent by construction: the dedupe key is the source-content sha1
 stashed in userdata (gtkpod ``.ext`` file), so a second run on an
@@ -50,7 +49,6 @@ from ipodsync import playlist as playlist_mod
 from ipodsync.add import AddError, read_tags
 from ipodsync.device import gpod as gpod_facade
 from ipodsync.device import mount as mount_mod
-from ipodsync.device import snapshot as snap
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
 from ipodsync.pipeline import artwork, probe, transcode
@@ -411,13 +409,6 @@ def run(
                 log.print("[red]✗[/] all new items failed during prepare")
                 return 1
 
-        try:
-            pre = snap.create(mnt, guid)
-        except snap.SnapshotError as e:
-            log.print(f"[red]✗[/] snapshot failed: {e}")
-            return 1
-        log.print(f"[dim]snapshot {pre.timestamp}[/]")
-
         added = 0
         pruned = 0
         playlist_results: list[tuple[str, int, int]] = []  # (name, added, missing)
@@ -497,9 +488,6 @@ def run(
                                 playlists_pruned.append(stale)
         except gpod_facade.DbWriteError as e:
             log.print(f"[red]✗[/] write failed: {e}")
-            log.print(
-                f"[dim]  → roll back: ipodsync restore --snapshot {pre.timestamp}[/]"
-            )
             return 1
 
         orphans = 0

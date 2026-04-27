@@ -8,9 +8,9 @@ Selection:
 All selectors intersect. At least one selector is required — blind ``rm``
 with no criteria is refused, to keep a typo from wiping the device.
 
-Every delete snapshots first, removes the track from all playlists, deletes
-the F## file, unlinks the iTunesDB row, and (on success) persists via
-``itdb_write`` + hash58.
+Every delete removes the track from all playlists, deletes the F## file,
+unlinks the iTunesDB row, and (on success) persists via ``itdb_write`` +
+hash58.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from rich.table import Table
 
 from ipodsync.device import gpod as gpod_facade
 from ipodsync.device import mount as mount_mod
-from ipodsync.device import snapshot as snap
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
 from ipodsync.device.gpod import Kind, TrackInfo
@@ -199,13 +198,6 @@ def run(
             log.print("[yellow]aborted[/]")
             return 1
 
-        try:
-            pre = snap.create(mnt, guid)
-        except snap.SnapshotError as e:
-            log.print(f"[red]✗[/] snapshot failed: {e}")
-            return 1
-        log.print(f"[dim]snapshot {pre.timestamp}[/]")
-
         ids_to_remove = {t.id for t in candidates}
         removed = 0
         try:
@@ -219,9 +211,6 @@ def run(
                     removed += 1
         except gpod_facade.DbWriteError as e:
             log.print(f"[red]✗[/] write failed: {e}")
-            log.print(
-                f"[dim]  → roll back: ipodsync restore --snapshot {pre.timestamp}[/]"
-            )
             return 1
 
         log.print(f"[green]✓[/] deleted {removed} track(s)")

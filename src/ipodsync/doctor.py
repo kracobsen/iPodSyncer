@@ -20,7 +20,6 @@ from rich.console import Console
 from rich.table import Table
 
 from ipodsync.device import gpod as gpod_facade
-from ipodsync.device import snapshot as snap
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, IpodDevice, find_ipod
 
@@ -320,7 +319,6 @@ def _check_db_roundtrip(mp: Path) -> CheckResult:
             "iTunesDB",
             "FAIL",
             f"libgpod could not parse iTunesDB: {e}",
-            fix="restore from a snapshot (`ipodsync restore --snapshot latest`)",
         )
     return CheckResult("iTunesDB", "OK", f"parsed; {n} track(s)")
 
@@ -341,22 +339,6 @@ def _check_track_counts(mp: Path) -> CheckResult:
     if counts.get(gpod_facade.Kind.OTHER):
         parts.append(f"other={counts[gpod_facade.Kind.OTHER]}")
     return CheckResult("track counts", "OK", " ".join(parts))
-
-
-def _dir_size(p: Path) -> int:
-    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
-
-
-def _check_snapshots(guid: str) -> CheckResult:
-    snaps = snap.list_snapshots(guid)
-    if not snaps:
-        return CheckResult("snapshots", "OK", "none yet (created on first mutating sync)")
-    total = sum(_dir_size(s.path) for s in snaps)
-    return CheckResult(
-        "snapshots",
-        "OK",
-        f"{len(snaps)} kept ({_human_bytes(total)} total); newest {snaps[-1].timestamp}",
-    )
 
 
 def _device_checks() -> list[CheckResult]:
@@ -400,10 +382,6 @@ def _device_checks() -> list[CheckResult]:
     out.append(_check_dirs(mp))
     out.append(_check_db_roundtrip(mp))
     out.append(_check_track_counts(mp))
-
-    guid = sysinfo.read_firewire_guid(mp)
-    if guid:
-        out.append(_check_snapshots(guid))
     return out
 
 

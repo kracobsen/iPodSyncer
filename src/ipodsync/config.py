@@ -1,8 +1,8 @@
 """Optional user config at ``~/.config/ipodsync/config.toml``.
 
 Phase 16. Provides defaults for the global ``--strict`` flag, a fallback
-``source_dir`` for ``sync``, the stdlib logging level, and the snapshot
-retention count. Missing file → all defaults. Missing keys → per-key default.
+``source_dir`` for ``sync``, and the stdlib logging level. Missing file →
+all defaults. Missing keys → per-key default.
 """
 
 from __future__ import annotations
@@ -26,10 +26,6 @@ EXAMPLE = """\
 
 # Stdlib logging level applied at CLI startup. DEBUG | INFO | WARNING | ERROR.
 # log_level = "INFO"
-
-# Number of pre-write DB snapshots to keep per device. Older ones are pruned
-# after each successful snapshot.
-# snapshot_retention = 10
 """
 
 
@@ -38,7 +34,6 @@ class Config:
     source_dir: Path | None = None
     strict: bool = False
     log_level: str = "INFO"
-    snapshot_retention: int = 10
 
 
 class ConfigError(RuntimeError):
@@ -59,7 +54,6 @@ def load(path: Path = CONFIG_PATH) -> Config:
         source_dir=Path(str(src)).expanduser() if src else None,
         strict=bool(raw.get("strict", False)),
         log_level=str(raw.get("log_level", "INFO")).upper(),
-        snapshot_retention=int(raw.get("snapshot_retention", 10)),
     )
 
 

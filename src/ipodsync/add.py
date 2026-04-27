@@ -4,9 +4,6 @@ Phase 6 was passthrough-only (MP3 / M4A, extension-gated). Phase 7 added
 artwork. Phase 8 inserts ``probe`` + ``transcode`` stages: ffprobe decides
 passthrough vs re-encode (mp3/aac/alac/pcm → passthrough; flac/opus/vorbis/
 etc → AAC 256 kbps .m4a, cached on disk). ``--strict`` refuses to transcode.
-
-Every write is preceded by a snapshot (phase 5) so a bad add can be rolled
-back.
 """
 
 from __future__ import annotations
@@ -18,7 +15,6 @@ from rich.console import Console
 
 from ipodsync.device import gpod as gpod_facade
 from ipodsync.device import mount as mount_mod
-from ipodsync.device import snapshot as snap
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
 from ipodsync.pipeline import artwork, probe, transcode
@@ -205,17 +201,9 @@ def run(source: Path, *, strict: bool = False, console: Console | None = None) -
         guid = sysinfo.read_firewire_guid(mnt)
         if not guid:
             log.print(
-                "[red]✗[/] FirewireGUID not found — needed for hash58 + snapshots"
+                "[red]✗[/] FirewireGUID not found — needed for hash58"
             )
             return 1
-
-        # Snapshot BEFORE any mutation (phase 5 contract).
-        try:
-            pre = snap.create(mnt, guid)
-        except snap.SnapshotError as e:
-            log.print(f"[red]✗[/] snapshot failed: {e}")
-            return 1
-        log.print(f"[dim]snapshot {pre.timestamp}[/]")
 
         added_track = None
         art_attached = False
@@ -246,7 +234,6 @@ def run(source: Path, *, strict: bool = False, console: Console | None = None) -
             return 1
         except gpod_facade.DbWriteError as e:
             log.print(f"[red]✗[/] write failed: {e}")
-            log.print(f"[dim]  → roll back with: ipodsync restore --snapshot {pre.timestamp}[/]")
             return 1
 
         # id is only valid post-commit (assigned by itdb_write).
