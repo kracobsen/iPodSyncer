@@ -53,7 +53,13 @@ log "Installing Homebrew deps"
 brew install \
   pkg-config meson ninja swig \
   glib libplist sqlite gdk-pixbuf libxml2 libusb \
-  pygobject3 ffmpeg
+  pygobject3
+# ffmpeg only if missing — leaves a homebrew-ffmpeg/ffmpeg --with-fdk-aac
+# install untouched. Bootstrap re-runs after the optional fdk-aac swap would
+# otherwise abort here on the brew formula conflict.
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  brew install ffmpeg
+fi
 
 log "Creating uv-managed venv at $VENV_DIR (python=$BREW_PY)"
 if [[ ! -d "$VENV_DIR" ]]; then
