@@ -411,6 +411,26 @@ def run(
                     log.print(f"[red]  · {p.source} ({p.codec})[/]")
             return 4
 
+        ledger_before = playlist_mod.load_ledger(guid)
+        # Refuse to clobber a same-named device playlist we don't own — without
+        # this, a hand-made "Workout" silently dies the moment the user adds a
+        # playlists/Workout.m3u. Force the user to rename one or the other.
+        foreign_collisions = sorted(
+            m.name for m in m3us
+            if m.name in existing_pl_members and m.name not in ledger_before
+        )
+        if foreign_collisions:
+            log.print(
+                f"[red]✗[/] {len(foreign_collisions)} M3U name(s) collide with "
+                f"device playlists not owned by ipodsync:"
+            )
+            for name in foreign_collisions:
+                log.print(f"[red]  · {name}[/]")
+            log.print(
+                "[red]  rename the M3U or the device playlist and rerun.[/]"
+            )
+            return 2
+
         if dry_run:
             if to_reap_sha1s:
                 log.print(
@@ -422,7 +442,6 @@ def run(
             log.print("[yellow]--dry-run: exiting without writes[/]")
             return 0
 
-        ledger_before = playlist_mod.load_ledger(guid)
         # Project after-sync sha1 set so M3U entries pointing at to-be-added
         # tracks count as "resolvable" during the diff. Reaped tracks get
         # subtracted because the rebuild runs after reap deletes them.
