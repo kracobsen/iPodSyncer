@@ -23,6 +23,7 @@ cache.
 from __future__ import annotations
 
 import functools
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -177,7 +178,10 @@ def plan(source: Path, probe_result: ProbeResult, sha1: str, *, strict: bool) ->
 
 
 def _run_ffmpeg(source: Path, out: Path) -> None:
-    tmp = out.with_suffix(out.suffix + ".tmp")
+    # PID-unique tmp so concurrent runs on the same sha1 don't trample each
+    # other mid-encode; os.replace is atomic, so the published file is always
+    # a complete encode (last writer wins, but never a torn one).
+    tmp = out.with_suffix(f"{out.suffix}.{os.getpid()}.tmp")
     if _has_libfdk_aac():
         codec_args = ["-c:a", "libfdk_aac", "-vbr", _FDK_VBR_QUALITY]
     else:
