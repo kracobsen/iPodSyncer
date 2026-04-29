@@ -51,6 +51,7 @@ from ipodsync.device import gpod as gpod_facade
 from ipodsync.device import mount as mount_mod
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
+from ipodsync.device.lock import LockError, device_lock
 from ipodsync.pipeline import artwork, probe, transcode
 from ipodsync.podcasts import ledger as pod_ledger
 
@@ -327,6 +328,7 @@ def run(
             return 1
         we_mounted = True
 
+    lock_cm = None
     try:
         if sysinfo.is_rockbox(mnt):
             log.print("[red]✗[/] Rockbox detected — refusing to write.")
@@ -335,6 +337,16 @@ def run(
         if not guid:
             log.print("[red]✗[/] FirewireGUID not found")
             return 1
+
+        # Per-device flock so two concurrent syncs of the same iPod can't
+        # both call itdb_write — last-writer-wins would silently drop
+        # adds/removes from the loser, or worse, leave a half-formed DB.
+        try:
+            lock_cm = device_lock(guid)
+            lock_cm.__enter__()
+        except LockError as e:
+            log.print(f"[red]✗[/] {e}")
+            return 6
 
         try:
             with gpod_facade.open_readonly(mnt) as db:
@@ -642,6 +654,8 @@ def run(
         )
         return 5 if total_failed else 0
     finally:
+        if lock_cm is not None:
+            lock_cm.__exit__(None, None, None)
         if we_mounted:
             try:
                 mount_mod.umount_quiet(mnt)

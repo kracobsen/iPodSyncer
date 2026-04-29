@@ -17,6 +17,7 @@ from ipodsync.device import gpod as gpod_facade
 from ipodsync.device import mount as mount_mod
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
+from ipodsync.device.lock import LockError, device_lock
 from ipodsync.pipeline import artwork, probe, transcode
 
 # codec_name → iTunes-style filetype label (cosmetic; shown in the iPod's
@@ -193,6 +194,7 @@ def run(source: Path, *, strict: bool = False, console: Console | None = None) -
             return 1
         we_mounted = True
 
+    lock_cm = None
     try:
         if sysinfo.is_rockbox(mnt):
             log.print("[red]✗[/] Rockbox detected — refusing to write.")
@@ -204,6 +206,14 @@ def run(source: Path, *, strict: bool = False, console: Console | None = None) -
                 "[red]✗[/] FirewireGUID not found — needed for hash58"
             )
             return 1
+
+        # Per-device flock — see device/lock.py.
+        try:
+            lock_cm = device_lock(guid)
+            lock_cm.__enter__()
+        except LockError as e:
+            log.print(f"[red]✗[/] {e}")
+            return 6
 
         added_track = None
         art_attached = False
@@ -249,6 +259,8 @@ def run(source: Path, *, strict: bool = False, console: Console | None = None) -
         )
         return 0
     finally:
+        if lock_cm is not None:
+            lock_cm.__exit__(None, None, None)
         if we_mounted:
             try:
                 mount_mod.umount_quiet(mnt)
