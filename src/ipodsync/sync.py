@@ -541,7 +541,7 @@ def run(
                 if m3us or (prune and ledger_before):
                     sha1_to_struct = gpod_facade.track_structs_by_sha1(db)
                     for m in m3us:
-                        ordered: list[Any] = []
+                        track_structs: list[Any] = []
                         missing = 0
                         for entry in m.entries:
                             sha = path_to_sha1.get(entry)
@@ -549,14 +549,14 @@ def run(
                             if tstruct is None:
                                 missing += 1
                                 continue
-                            ordered.append(tstruct)
+                            track_structs.append(tstruct)
                         prior_pl = gpod_facade.find_user_playlist_struct(db, m.name)
                         if prior_pl is not None:
                             gpod_facade.delete_user_playlist(prior_pl)
                         new_pl = gpod_facade.create_user_playlist_struct(db, m.name)
-                        for ts in ordered:
+                        for ts in track_structs:
                             gpod_facade.add_track_struct_to_playlist(new_pl, ts)
-                        playlist_results.append((m.name, len(ordered), missing))
+                        playlist_results.append((m.name, len(track_structs), missing))
 
                     if prune:
                         for stale in sorted(ledger_before - expected_pl_names):
