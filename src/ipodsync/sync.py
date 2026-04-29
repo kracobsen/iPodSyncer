@@ -371,9 +371,13 @@ def run(
         ]
         dedup_skip = len(plans) - len(to_add)
         transcode_n = sum(1 for p in to_add if p.needs_transcode)
-        to_prune_n = len(existing - source_sha1s) if prune else 0
+        # Subtract reaps so the announce totals reconcile: a played podcast
+        # whose source has been deleted lands in both sets, but reap runs
+        # first, so prune wouldn't see it.
+        prune_candidates = existing - source_sha1s - to_reap_sha1s
+        to_prune_n = len(prune_candidates) if prune else 0
         prune_blocked = (
-            0 if prune else len(existing - source_sha1s)
+            0 if prune else len(prune_candidates)
         )  # cosmetic — for the "extras left alone" line
 
         log.print(
