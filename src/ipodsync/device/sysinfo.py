@@ -19,7 +19,16 @@ from pathlib import Path
 from typing import Any
 
 SYSINFO_REL = Path("iPod_Control/Device/SysInfo")
+SYSINFO_EXT_REL = Path("iPod_Control/Device/SysInfoExtended")
 ROCKBOX_REL = Path(".rockbox")
+
+# Apple model codes for iPod Classic 6G (160GB late 2007, 120GB / 80GB late
+# 2008) and 6.5G ("Late 2009" 160GB thin). The codebase assumes 6G hash58 +
+# RGB565 thumbnails + DB layout, so anything else risks a corrupt write.
+SUPPORTED_MODELS: frozenset[str] = frozenset({
+    "MB029", "MB147", "MB150", "MB562", "MB565",  # 6G
+    "MC293", "MC297",                              # 6.5G
+})
 
 _GUID_RE = re.compile(r"^\s*FirewireGuid\s*:\s*(0x[0-9A-Fa-f]+)\s*$", re.MULTILINE)
 
@@ -78,3 +87,55 @@ def _read_guid_from_ioreg() -> str | None:
 def read_firewire_guid(mount_point: Path) -> str | None:
     """Return `0x…` FireWire GUID from SysInfo, falling back to ioreg."""
     return _read_guid_from_sysinfo(mount_point) or _read_guid_from_ioreg()
+
+
+def sysinfo_extended_path(mount_point: Path) -> Path:
+    return mount_point / SYSINFO_EXT_REL
+
+
+def read_model_num_str(mount_point: Path) -> str | None:
+    """Return the device's ``ModelNumStr`` from SysInfoExtended, or None.
+
+    Apple ships ``ModelNumStr`` either bare (``MB562``) or with a region
+    suffix (``MB562LL``); the leading 5-char code is the family identifier.
+    """
+    p = sysinfo_extended_path(mount_point)
+    try:
+        data = p.read_bytes()
+    except OSError:
+        return None
+    try:
+        plist = plistlib.loads(data)
+    except Exception:
+        return None
+    if not isinstance(plist, dict):
+        return None
+    raw = plist.get("ModelNumStr")
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
+
+
+def is_supported_model(model_num_str: str) -> bool:
+    """``ModelNumStr`` is sometimes ``MB562`` and sometimes ``MB562LL/A``."""
+    return model_num_str[:5] in SUPPORTED_MODELS
+
+
+def verify_classic_6g(mount_point: Path) -> tuple[str | None, str | None]:
+    """Return ``(model_num_str, error)``.
+
+    - ``(model, None)`` — recognised 6G/6.5G code, OK to proceed.
+    - ``(model, "...")`` — file is present but model is not 6G/6.5G; caller
+      MUST refuse, otherwise the codebase's 6G-specific assumptions
+      (hash58, RGB565 thumbs, DB layout) corrupt the iTunesDB.
+    - ``(None, None)`` — file missing or unparseable; caller decides
+      (legacy behaviour is to proceed; ``doctor`` surfaces it).
+    """
+    model = read_model_num_str(mount_point)
+    if model is None:
+        return None, None
+    if is_supported_model(model):
+        return model, None
+    return model, (
+        f"unsupported iPod model {model!r} — ipodsync targets Classic 6G/6.5G only"
+    )

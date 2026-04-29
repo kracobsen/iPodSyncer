@@ -200,6 +200,11 @@ def run(source: Path, *, strict: bool = False, console: Console | None = None) -
             log.print("[red]✗[/] Rockbox detected — refusing to write.")
             return 3
 
+        _model, model_err = sysinfo.verify_classic_6g(mnt)
+        if model_err is not None:
+            log.print(f"[red]✗[/] {model_err}")
+            return 3
+
         guid = sysinfo.read_firewire_guid(mnt)
         if not guid:
             log.print(
