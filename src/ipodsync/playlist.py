@@ -16,6 +16,7 @@ playlists with arbitrary names are never touched.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -113,7 +114,14 @@ def load_ledger(guid: str) -> set[str]:
 
 
 def save_ledger(guid: str, names: set[str]) -> None:
+    """Atomically write the playlist-ownership ledger.
+
+    Crash mid-write would otherwise leave a half-written / empty JSON file,
+    and a future ``--prune`` would treat no playlists as ours.
+    """
     p = ledger_path(guid)
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = {"owned": sorted(names)}
-    p.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, p)

@@ -26,11 +26,13 @@ from ipodsync.device import mount as mount_mod
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
 from ipodsync.device.gpod import Kind, TrackInfo
+from ipodsync.device.lock import LockError, device_lock
 
 _KIND_FILTERS: dict[str, Kind] = {
     "music": Kind.MUSIC,
     "podcast": Kind.PODCAST,
     "book": Kind.AUDIOBOOK,
+    "audiobook": Kind.AUDIOBOOK,
 }
 
 _FILTER_FIELDS = {"title", "artist", "album", "genre"}
@@ -148,14 +150,27 @@ def run(
             return 1
         we_mounted = True
 
+    lock_cm = None
     try:
         if sysinfo.is_rockbox(mnt):
             log.print("[red]✗[/] Rockbox detected — refusing to write.")
+            return 3
+        _model, model_err = sysinfo.verify_classic_6g(mnt)
+        if model_err is not None:
+            log.print(f"[red]✗[/] {model_err}")
             return 3
         guid = sysinfo.read_firewire_guid(mnt)
         if not guid:
             log.print("[red]✗[/] FirewireGUID not found")
             return 1
+
+        # Per-device flock — see device/lock.py.
+        try:
+            lock_cm = device_lock(guid)
+            lock_cm.__enter__()
+        except LockError as e:
+            log.print(f"[red]✗[/] {e}")
+            return 6
 
         try:
             with gpod_facade.open_readonly(mnt) as db:
@@ -216,6 +231,8 @@ def run(
         log.print(f"[green]✓[/] deleted {removed} track(s)")
         return 0
     finally:
+        if lock_cm is not None:
+            lock_cm.__exit__(None, None, None)
         if we_mounted:
             try:
                 mount_mod.umount_quiet(mnt)

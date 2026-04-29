@@ -14,6 +14,14 @@
 
 set -euo pipefail
 
+FORCE=0
+for arg in "$@"; do
+  case "$arg" in
+    --force) FORCE=1 ;;
+    *) printf 'error: unknown arg: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_DIR="$REPO_ROOT/vendor"
 VENV_DIR="$REPO_ROOT/.venv"
@@ -45,7 +53,13 @@ log "Installing Homebrew deps"
 brew install \
   pkg-config meson ninja swig \
   glib libplist sqlite gdk-pixbuf libxml2 libusb \
-  pygobject3 ffmpeg
+  pygobject3
+# ffmpeg only if missing — leaves a homebrew-ffmpeg/ffmpeg --with-fdk-aac
+# install untouched. Bootstrap re-runs after the optional fdk-aac swap would
+# otherwise abort here on the brew formula conflict.
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  brew install ffmpeg
+fi
 
 log "Creating uv-managed venv at $VENV_DIR (python=$BREW_PY)"
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -61,6 +75,12 @@ mkdir -p "$VENDOR_DIR"
 if [[ ! -d "$LIBGPOD_DIR/.git" ]]; then
   git clone "$LIBGPOD_REPO" "$LIBGPOD_DIR"
 else
+  # Refuse to wipe local libgpod edits (the script applies patches to this
+  # tree, so dirty state is the developer iterating on a fix). --force is
+  # the explicit "I know, blow it away" override for CI / fresh clones.
+  if [[ -n "$(git -C "$LIBGPOD_DIR" status --porcelain)" && $FORCE -eq 0 ]]; then
+    die "vendor/libgpod has local changes; commit/stash them or rerun with --force"
+  fi
   git -C "$LIBGPOD_DIR" fetch --quiet
   git -C "$LIBGPOD_DIR" reset --hard --quiet origin/HEAD
 fi

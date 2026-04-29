@@ -51,6 +51,7 @@ from ipodsync.device import gpod as gpod_facade
 from ipodsync.device import mount as mount_mod
 from ipodsync.device import sysinfo
 from ipodsync.device.detect import DetectError, find_ipod
+from ipodsync.device.lock import LockError, device_lock
 from ipodsync.pipeline import artwork, probe, transcode
 from ipodsync.podcasts import ledger as pod_ledger
 
@@ -327,14 +328,29 @@ def run(
             return 1
         we_mounted = True
 
+    lock_cm = None
     try:
         if sysinfo.is_rockbox(mnt):
             log.print("[red]✗[/] Rockbox detected — refusing to write.")
+            return 3
+        _model, model_err = sysinfo.verify_classic_6g(mnt)
+        if model_err is not None:
+            log.print(f"[red]✗[/] {model_err}")
             return 3
         guid = sysinfo.read_firewire_guid(mnt)
         if not guid:
             log.print("[red]✗[/] FirewireGUID not found")
             return 1
+
+        # Per-device flock so two concurrent syncs of the same iPod can't
+        # both call itdb_write — last-writer-wins would silently drop
+        # adds/removes from the loser, or worse, leave a half-formed DB.
+        try:
+            lock_cm = device_lock(guid)
+            lock_cm.__enter__()
+        except LockError as e:
+            log.print(f"[red]✗[/] {e}")
+            return 6
 
         try:
             with gpod_facade.open_readonly(mnt) as db:
@@ -371,9 +387,13 @@ def run(
         ]
         dedup_skip = len(plans) - len(to_add)
         transcode_n = sum(1 for p in to_add if p.needs_transcode)
-        to_prune_n = len(existing - source_sha1s) if prune else 0
+        # Subtract reaps so the announce totals reconcile: a played podcast
+        # whose source has been deleted lands in both sets, but reap runs
+        # first, so prune wouldn't see it.
+        prune_candidates = existing - source_sha1s - to_reap_sha1s
+        to_prune_n = len(prune_candidates) if prune else 0
         prune_blocked = (
-            0 if prune else len(existing - source_sha1s)
+            0 if prune else len(prune_candidates)
         )  # cosmetic — for the "extras left alone" line
 
         log.print(
@@ -407,6 +427,26 @@ def run(
                     log.print(f"[red]  · {p.source} ({p.codec})[/]")
             return 4
 
+        ledger_before = playlist_mod.load_ledger(guid)
+        # Refuse to clobber a same-named device playlist we don't own — without
+        # this, a hand-made "Workout" silently dies the moment the user adds a
+        # playlists/Workout.m3u. Force the user to rename one or the other.
+        foreign_collisions = sorted(
+            m.name for m in m3us
+            if m.name in existing_pl_members and m.name not in ledger_before
+        )
+        if foreign_collisions:
+            log.print(
+                f"[red]✗[/] {len(foreign_collisions)} M3U name(s) collide with "
+                f"device playlists not owned by ipodsync:"
+            )
+            for name in foreign_collisions:
+                log.print(f"[red]  · {name}[/]")
+            log.print(
+                "[red]  rename the M3U or the device playlist and rerun.[/]"
+            )
+            return 2
+
         if dry_run:
             if to_reap_sha1s:
                 log.print(
@@ -418,7 +458,6 @@ def run(
             log.print("[yellow]--dry-run: exiting without writes[/]")
             return 0
 
-        ledger_before = playlist_mod.load_ledger(guid)
         # Project after-sync sha1 set so M3U entries pointing at to-be-added
         # tracks count as "resolvable" during the diff. Reaped tracks get
         # subtracted because the rebuild runs after reap deletes them.
@@ -541,7 +580,7 @@ def run(
                 if m3us or (prune and ledger_before):
                     sha1_to_struct = gpod_facade.track_structs_by_sha1(db)
                     for m in m3us:
-                        ordered: list[Any] = []
+                        track_structs: list[Any] = []
                         missing = 0
                         for entry in m.entries:
                             sha = path_to_sha1.get(entry)
@@ -549,14 +588,14 @@ def run(
                             if tstruct is None:
                                 missing += 1
                                 continue
-                            ordered.append(tstruct)
+                            track_structs.append(tstruct)
                         prior_pl = gpod_facade.find_user_playlist_struct(db, m.name)
                         if prior_pl is not None:
                             gpod_facade.delete_user_playlist(prior_pl)
                         new_pl = gpod_facade.create_user_playlist_struct(db, m.name)
-                        for ts in ordered:
+                        for ts in track_structs:
                             gpod_facade.add_track_struct_to_playlist(new_pl, ts)
-                        playlist_results.append((m.name, len(ordered), missing))
+                        playlist_results.append((m.name, len(track_structs), missing))
 
                     if prune:
                         for stale in sorted(ledger_before - expected_pl_names):
@@ -619,6 +658,8 @@ def run(
         )
         return 5 if total_failed else 0
     finally:
+        if lock_cm is not None:
+            lock_cm.__exit__(None, None, None)
         if we_mounted:
             try:
                 mount_mod.umount_quiet(mnt)

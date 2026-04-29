@@ -254,6 +254,28 @@ def _check_rockbox(mp: Path) -> CheckResult:
     return CheckResult("Rockbox", "OK", "not installed")
 
 
+def _check_model(mp: Path) -> CheckResult:
+    model = sysinfo.read_model_num_str(mp)
+    if model is None:
+        return CheckResult(
+            "model",
+            "WARN",
+            "SysInfoExtended missing or unparseable — model not verified",
+            fix=(
+                "fetch SysInfoExtended via libusb (run `scripts/bootstrap.sh` "
+                "if not already done) so model verification can run"
+            ),
+        )
+    if not sysinfo.is_supported_model(model):
+        return CheckResult(
+            "model",
+            "FAIL",
+            f"{model} — ipodsync targets Classic 6G/6.5G only",
+            fix="connect a supported iPod (6G or 6.5G) and rerun",
+        )
+    return CheckResult("model", "OK", model)
+
+
 def _check_guid(mp: Path) -> CheckResult:
     guid = sysinfo.read_firewire_guid(mp)
     if not guid:
@@ -404,6 +426,11 @@ def _device_checks() -> list[CheckResult]:
     rockbox = _check_rockbox(mp)
     out.append(rockbox)
     if rockbox.status == "FAIL":
+        return out
+
+    model = _check_model(mp)
+    out.append(model)
+    if model.status == "FAIL":
         return out
 
     out.append(_check_guid(mp))

@@ -89,7 +89,7 @@ def ls_(
     kind: str | None = typer.Option(
         None,
         "--kind",
-        help="Filter: music | podcast | book",
+        help="Filter: music | podcast | book (alias: audiobook)",
         case_sensitive=False,
     ),
     as_json: bool = typer.Option(
@@ -132,7 +132,7 @@ def rm(
     kind: str | None = typer.Option(
         None,
         "--kind",
-        help="Constrain to music | podcast | book.",
+        help="Constrain to music | podcast | book (alias: audiobook).",
         case_sensitive=False,
     ),
     dry_run: bool = typer.Option(
