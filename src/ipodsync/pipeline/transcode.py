@@ -33,6 +33,11 @@ from ipodsync.pipeline.probe import ProbeResult
 
 VERSION = 3
 
+# Independent of VERSION — the peak measurement is decoupled from the encode.
+# Bump this when the measurement method changes (filter, regex, threshold
+# semantics) to invalidate every cached `<sha1>-peak-vN.txt`.
+PEAK_VERSION = 1
+
 # Encoder preference: libfdk_aac when ffmpeg has it (homebrew-ffmpeg/ffmpeg tap
 # with --with-fdk-aac), else the built-in `aac` encoder. fdk_aac's VBR mode 5
 # lands ~224 kbps avg while being audibly transparent on complex material; the
@@ -104,15 +109,15 @@ def cache_path(sha1: str) -> Path:
 
 
 def _peak_cache_path(sha1: str) -> Path:
-    return _cache_dir() / f"{sha1}-peak.txt"
+    return _cache_dir() / f"{sha1}-peak-v{PEAK_VERSION}.txt"
 
 
 def measure_peak_db(source: Path, sha1: str) -> float:
     """Return the source's max_volume (dBFS) per ffmpeg volumedetect.
 
     Cached on disk: a 12 h audiobook decodes for ~30 s, too costly to
-    repeat each sync. Cache survives :data:`VERSION` bumps because the
-    measurement only depends on the source bytes.
+    repeat each sync. Bumping :data:`PEAK_VERSION` invalidates the cache
+    when the measurement method changes.
     """
     cache = _peak_cache_path(sha1)
     if cache.is_file():
