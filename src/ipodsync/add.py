@@ -208,14 +208,18 @@ def run(source: Path, *, strict: bool = False, console: Console | None = None) -
         added_track = None
         art_attached = False
         try:
-            with gpod_facade.open_readwrite(mnt) as db:
+            # Dedupe check on a read-only handle first — open_readwrite's
+            # exit calls itdb_write, so doing the check inside it would burn
+            # a flash cycle on every idempotent re-add.
+            with gpod_facade.open_readonly(mnt) as db:
                 existing_id = gpod_facade.find_track_id_by_hash(db, sha1)
-                if existing_id is not None:
-                    log.print(
-                        f"[yellow]=[/] already on device as track #{existing_id} "
-                        f"(sha1={sha1[:10]}…)"
-                    )
-                    return 0
+            if existing_id is not None:
+                log.print(
+                    f"[yellow]=[/] already on device as track #{existing_id} "
+                    f"(sha1={sha1[:10]}…)"
+                )
+                return 0
+            with gpod_facade.open_readwrite(mnt) as db:
                 added_track = gpod_facade.add_music_track(
                     db, plan.effective_path, tags, sha1
                 )

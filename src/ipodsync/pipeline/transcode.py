@@ -23,6 +23,7 @@ cache.
 from __future__ import annotations
 
 import functools
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -31,6 +32,11 @@ from pathlib import Path
 from ipodsync.pipeline.probe import ProbeResult
 
 VERSION = 3
+
+# Independent of VERSION — the peak measurement is decoupled from the encode.
+# Bump this when the measurement method changes (filter, regex, threshold
+# semantics) to invalidate every cached `<sha1>-peak-vN.txt`.
+PEAK_VERSION = 1
 
 # Encoder preference: libfdk_aac when ffmpeg has it (homebrew-ffmpeg/ffmpeg tap
 # with --with-fdk-aac), else the built-in `aac` encoder. fdk_aac's VBR mode 5
@@ -103,15 +109,15 @@ def cache_path(sha1: str) -> Path:
 
 
 def _peak_cache_path(sha1: str) -> Path:
-    return _cache_dir() / f"{sha1}-peak.txt"
+    return _cache_dir() / f"{sha1}-peak-v{PEAK_VERSION}.txt"
 
 
 def measure_peak_db(source: Path, sha1: str) -> float:
     """Return the source's max_volume (dBFS) per ffmpeg volumedetect.
 
     Cached on disk: a 12 h audiobook decodes for ~30 s, too costly to
-    repeat each sync. Cache survives :data:`VERSION` bumps because the
-    measurement only depends on the source bytes.
+    repeat each sync. Bumping :data:`PEAK_VERSION` invalidates the cache
+    when the measurement method changes.
     """
     cache = _peak_cache_path(sha1)
     if cache.is_file():
@@ -177,7 +183,10 @@ def plan(source: Path, probe_result: ProbeResult, sha1: str, *, strict: bool) ->
 
 
 def _run_ffmpeg(source: Path, out: Path) -> None:
-    tmp = out.with_suffix(out.suffix + ".tmp")
+    # PID-unique tmp so concurrent runs on the same sha1 don't trample each
+    # other mid-encode; os.replace is atomic, so the published file is always
+    # a complete encode (last writer wins, but never a torn one).
+    tmp = out.with_suffix(f"{out.suffix}.{os.getpid()}.tmp")
     if _has_libfdk_aac():
         codec_args = ["-c:a", "libfdk_aac", "-vbr", _FDK_VBR_QUALITY]
     else:

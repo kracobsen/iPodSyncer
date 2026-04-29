@@ -12,6 +12,7 @@ a sibling ``.miss`` sentinel so re-runs on art-less files short-circuit too.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import mutagen
@@ -96,7 +97,9 @@ def extract_cached(source: Path, sha1: str) -> Path | None:
 
     data = extract(source)
     if data:
-        tmp = hit.with_suffix(hit.suffix + ".tmp")
+        # PID-unique tmp so concurrent extracts of the same sha1 don't race
+        # on the rename target; os.replace is atomic.
+        tmp = hit.with_suffix(f"{hit.suffix}.{os.getpid()}.tmp")
         tmp.write_bytes(data)
         tmp.replace(hit)
         return hit
