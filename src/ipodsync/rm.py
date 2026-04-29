@@ -31,6 +31,7 @@ _KIND_FILTERS: dict[str, Kind] = {
     "music": Kind.MUSIC,
     "podcast": Kind.PODCAST,
     "book": Kind.AUDIOBOOK,
+    "audiobook": Kind.AUDIOBOOK,
 }
 
 _FILTER_FIELDS = {"title", "artist", "album", "genre"}
